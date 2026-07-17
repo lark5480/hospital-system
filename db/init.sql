@@ -676,3 +676,50 @@ CREATE INDEX IF NOT EXISTS idx_visit_rm_doctor_name ON clinical.visit_read_model
 CREATE INDEX IF NOT EXISTS idx_visit_rm_chief_complaint ON clinical.visit_read_model(chief_complaint);
 CREATE INDEX IF NOT EXISTS idx_visit_rm_visit_time ON clinical.visit_read_model(visit_time DESC);
 CREATE INDEX IF NOT EXISTS idx_visit_rm_dept_id ON clinical.visit_read_model(dept_id);
+
+-- ===================== 结构化病历 =====================
+CREATE TABLE IF NOT EXISTS clinical.medical_record (
+    id              BIGSERIAL PRIMARY KEY,
+    visit_id        BIGINT NOT NULL UNIQUE,
+    patient_id      BIGINT NOT NULL,
+    doctor_id       BIGINT NOT NULL,
+    dept_id         BIGINT,
+
+    -- 结构化字段
+    chief_complaint     VARCHAR(500),
+    present_illness     TEXT,
+    past_history        TEXT,
+    family_history      TEXT,
+    allergy_history     TEXT,
+
+    -- JSONB 字段
+    physical_exam       JSONB DEFAULT '{}',
+    auxiliary_exam      JSONB DEFAULT '[]',
+    diagnosis           JSONB DEFAULT '[]',
+
+    treatment_plan      TEXT,
+
+    -- 元数据
+    status              VARCHAR(30) DEFAULT 'DRAFT',
+    created_at          TIMESTAMP DEFAULT now(),
+    updated_at          TIMESTAMP DEFAULT now(),
+    finalized_at        TIMESTAMP
+);
+
+COMMENT ON TABLE clinical.medical_record IS '结构化病历(门诊病历)';
+COMMENT ON COLUMN clinical.medical_record.visit_id IS '关联就诊ID';
+COMMENT ON COLUMN clinical.medical_record.chief_complaint IS '主诉';
+COMMENT ON COLUMN clinical.medical_record.present_illness IS '现病史';
+COMMENT ON COLUMN clinical.medical_record.past_history IS '既往史';
+COMMENT ON COLUMN clinical.medical_record.family_history IS '家族史';
+COMMENT ON COLUMN clinical.medical_record.allergy_history IS '过敏史';
+COMMENT ON COLUMN clinical.medical_record.physical_exam IS '体格检查(JSONB)';
+COMMENT ON COLUMN clinical.medical_record.auxiliary_exam IS '辅助检查(JSONB)';
+COMMENT ON COLUMN clinical.medical_record.diagnosis IS '诊断(JSONB)';
+COMMENT ON COLUMN clinical.medical_record.treatment_plan IS '治疗计划';
+COMMENT ON COLUMN clinical.medical_record.status IS '状态:DRAFT/FINAL';
+COMMENT ON COLUMN clinical.medical_record.finalized_at IS '终诊时间';
+
+CREATE INDEX IF NOT EXISTS idx_mr_visit_id ON clinical.medical_record(visit_id);
+CREATE INDEX IF NOT EXISTS idx_mr_patient_id ON clinical.medical_record(patient_id);
+CREATE INDEX IF NOT EXISTS idx_mr_diagnosis ON clinical.medical_record USING GIN (diagnosis);
