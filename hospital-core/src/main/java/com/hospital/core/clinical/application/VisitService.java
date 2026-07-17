@@ -17,9 +17,11 @@ import com.hospital.core.clinical.domain.Charge;
 import com.hospital.core.clinical.domain.Order;
 import com.hospital.core.clinical.domain.Visit;
 import com.hospital.core.clinical.domain.VisitCreatedEvent;
+import com.hospital.core.clinical.domain.VisitReadModel;
 import com.hospital.core.clinical.infrastructure.ChargeMapper;
 import com.hospital.core.clinical.infrastructure.OrderMapper;
 import com.hospital.core.clinical.infrastructure.VisitMapper;
+import com.hospital.core.clinical.infrastructure.VisitReadModelMapper;
 import com.hospital.core.clinical.application.ChargeService;
 import com.hospital.core.org.application.DepartmentService;
 import com.hospital.core.org.application.StaffService;
@@ -40,6 +42,7 @@ public class VisitService {
     private final StaffService staffService;
     private final DepartmentService departmentService;
     private final VisitReadModelService readModelService;
+    private final VisitReadModelMapper readModelMapper;
 
     /** 简单建就诊(无医嘱);保留以向后端直接调用。 */
     @Transactional
@@ -272,58 +275,71 @@ public class VisitService {
     }
 
     /**
-     * 分页查询就诊列表(按就诊时间倒序,支持关键字搜索:患者姓名/医生姓名/主诉)。
+     * 分页查询就诊列表（走读模型，O(1) 复杂度）
      */
     public PageResult<VisitDetail> listPage(String keyword, int pageNum, int pageSize, Long currentDeptId) {
-        // 如果用 MyBatis-Plus 的分页插件需要 Page 对象;此处先用内存分页写清晰逻辑。
-        // 跨科协作:就诊单对"归属科室(visit.deptId)"或"有待执行医嘱的执行科室(order.executionDeptId)"均可见。
-        List<Order> allOrders = orderMapper.selectList(null);
-        List<Visit> allVisits = visitMapper.selectList(null).stream()
-                .filter(v -> isVisibleToDept(v, currentDeptId, allOrders))  // 科室过滤(含执行科室)
-                .sorted((a, b) -> {
-                    // 按就诊时间倒序(null 兜底到最早)
-                    if (a.getVisitTime() == null && b.getVisitTime() == null) return 0;
-                    if (a.getVisitTime() == null) return 1;
-                    if (b.getVisitTime() == null) return -1;
-                    return b.getVisitTime().compareTo(a.getVisitTime());
-                })
+        // 构建查询条件
+        LambdaQueryWrapper<VisitReadModel> wrapper = new LambdaQueryWrapper<>();
+
+        // 科室过滤
+        if (currentDeptId != null) {
+            wrapper.eq(VisitReadModel::getDeptId, currentDeptId);
+        }
+
+        // 关键字搜索
+        if (keyword != null && !keyword.isBlank()) {
+            String kw = keyword.toLowerCase();
+            wrapper.and(w -> w
+                    .like(VisitReadModel::getPatientName, kw)
+                    .or().like(VisitReadModel::getDoctorName, kw)
+                    .or().like(VisitReadModel::getChiefComplaint, kw));
+        }
+
+        // 排序
+        wrapper.orderByDesc(VisitReadModel::getVisitTime);
+
+        // 查询总数
+        Long total = readModelMapper.selectCount(wrapper);
+
+        // 分页查询
+        int offset = (pageNum - 1) * pageSize;
+        wrapper.last("LIMIT " + pageSize + " OFFSET " + offset);
+        List<VisitReadModel> readModels = readModelMapper.selectList(wrapper);
+
+        // 转换为 VisitDetail（详情仍走写模型，保证实时性）
+        List<VisitDetail> items = readModels.stream()
+                .map(rm -> convertToDetail(rm))
                 .toList();
 
-        // 关键字搜索 + 完整投影(含医嘱/收费/收费状态,与 getDetail 一致)
-        List<VisitDetail> filtered = allVisits.stream().map(v -> {
-            List<Order> orders = orderMapper.selectList(null).stream()
-                    .filter(o -> v.getId().equals(o.getVisitId())).toList();
-            List<Charge> charges = chargeMapper.selectList(null).stream()
-                    .filter(c -> v.getId().equals(c.getVisitId())).toList();
-            BigDecimal total = charges.stream().map(Charge::getAmount).reduce(BigDecimal.ZERO, BigDecimal::add);
-            return VisitDetail.builder()
-                    .visit(v)
-                    .orders(orders)
-                    .charges(charges)
-                    .totalAmount(total)
-                    .patientName(resolvePatientName(v.getPatientId()))
-                    .doctorName(resolveDoctorName(v.getDoctorId()))
-                    .deptName(resolveDeptName(v.getDeptId()))
-                    .payStatus(resolvePayStatus(charges))
-                    .build();
-        }).filter(d -> {
-            if (keyword == null || keyword.isBlank()) return true;
-            String kw = keyword.toLowerCase();
-            return (d.getPatientName() != null && d.getPatientName().toLowerCase().contains(kw))
-                    || (d.getDoctorName() != null && d.getDoctorName().toLowerCase().contains(kw))
-                    || (d.getVisit().getChiefComplaint() != null && d.getVisit().getChiefComplaint().toLowerCase().contains(kw));
-        }).toList();
-
-        int total = filtered.size();
-        int from = Math.min((pageNum - 1) * pageSize, total);
-        int to = Math.min(from + pageSize, total);
-        List<VisitDetail> pageItems = filtered.subList(from, to);
-
         return PageResult.<VisitDetail>builder()
-                .items(pageItems)
-                .total(total)
+                .items(items)
+                .total(total.intValue())
                 .pageNum(pageNum)
                 .pageSize(pageSize)
+                .build();
+    }
+
+    /**
+     * 从读模型转换为 VisitDetail
+     */
+    private VisitDetail convertToDetail(VisitReadModel rm) {
+        Visit visit = visitMapper.selectById(rm.getVisitId());
+        if (visit == null) return null;
+
+        List<Order> orders = orderMapper.selectList(
+                new LambdaQueryWrapper<Order>().eq(Order::getVisitId, rm.getVisitId()));
+        List<Charge> charges = chargeMapper.selectList(
+                new LambdaQueryWrapper<Charge>().eq(Charge::getVisitId, rm.getVisitId()));
+
+        return VisitDetail.builder()
+                .visit(visit)
+                .orders(orders)
+                .charges(charges)
+                .totalAmount(rm.getTotalAmount())
+                .patientName(rm.getPatientName())
+                .doctorName(rm.getDoctorName())
+                .deptName(rm.getDeptName())
+                .payStatus(rm.getPayStatus())
                 .build();
     }
 
