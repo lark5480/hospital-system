@@ -388,6 +388,17 @@ public class VisitService {
         }).toList();
     }
 
+    /** 按患者 ID 查询就诊列表(供 FHIR facade 使用)。 */
+    public List<Visit> listByPatientId(Long patientId) {
+        return visitMapper.selectList(
+                new LambdaQueryWrapper<Visit>().eq(Visit::getPatientId, patientId));
+    }
+
+    /** 全量就诊列表(仅返回 Visit 实体,供 FHIR facade 使用)。 */
+    public List<Visit> listAll() {
+        return visitMapper.selectList(null);
+    }
+
     /** 判断收费状态: charges 全无 NO_CHARGES,有未缴 HAS_UNPAID,全部 ALL_PAID */
     private String resolvePayStatus(List<Charge> charges) {
         if (charges == null || charges.isEmpty()) return "NO_CHARGES";
