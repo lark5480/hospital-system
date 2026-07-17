@@ -295,11 +295,11 @@ public class VisitService {
                     .or().like(VisitReadModel::getChiefComplaint, kw));
         }
 
-        // 排序
-        wrapper.orderByDesc(VisitReadModel::getVisitTime);
-
-        // 查询总数
+        // 查询总数（ORDER BY 不能用于 COUNT 查询）
         Long total = readModelMapper.selectCount(wrapper);
+
+        // 排序（在 COUNT 之后追加，避免污染 count SQL）
+        wrapper.orderByDesc(VisitReadModel::getVisitTime);
 
         // 分页查询
         int offset = (pageNum - 1) * pageSize;
