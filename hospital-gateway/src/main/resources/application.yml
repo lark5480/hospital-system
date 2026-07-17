@@ -1,0 +1,63 @@
+server:
+  port: 8104
+
+spring:
+  application:
+    name: hospital-gateway
+  cloud:
+    gateway:
+      discovery:
+        locator:
+          enabled: false
+      globalcors:
+        cors-configurations:
+          '[/**]':
+            allowed-origin-patterns: "*"
+            allowed-methods: "*"
+            allowed-headers: "*"
+            allow-credentials: true
+      routes:
+        - id: hospital-auth
+          uri: http://${CORE_HOST:localhost}:8101
+          predicates:
+            - Path=/api/auth/**
+        - id: hospital-core
+          uri: http://${CORE_HOST:localhost}:8101
+          predicates:
+            - Path=/api/core/**
+        - id: hospital-notification
+          uri: http://${NOTIFICATION_HOST:localhost}:8102
+          predicates:
+            - Path=/api/notify/**
+        - id: hospital-file
+          uri: http://${FILE_HOST:localhost}:8103
+          predicates:
+            - Path=/api/files/**
+        - id: hospital-patient
+          uri: http://${CORE_HOST:localhost}:8101
+          predicates:
+            - Path=/api/patient/**
+        - id: hospital-pharmacy
+          uri: http://${CORE_HOST:localhost}:8101
+          predicates:
+            - Path=/api/pharmacy/**
+        - id: hospital-lab
+          uri: http://${CORE_HOST:localhost}:8101
+          predicates:
+            - Path=/api/lab/**
+        - id: hospital-exam
+          uri: http://${CORE_HOST:localhost}:8101
+          predicates:
+            - Path=/api/core/exams/**
+        - id: hospital-report
+          uri: http://${CORE_HOST:localhost}:8101
+          predicates:
+            - Path=/api/reports/**
+        - id: hospital-fhir
+          uri: http://${CORE_HOST:localhost}:8101
+          predicates:
+            - Path=/fhir/**
+
+logging:
+  level:
+    com.hospital: debug
