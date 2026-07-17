@@ -77,6 +77,12 @@
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
         </dependency>
+        <!-- SpringDoc OpenAPI (Swagger UI) -->
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+            <version>2.3.0</version>
+        </dependency>
 
         <!-- 报告 PDF 生成:Thymeleaf 模板 + Flying Saucer(HTML→PDF) + CommonMark(Markdown→HTML) -->
         <dependency>
