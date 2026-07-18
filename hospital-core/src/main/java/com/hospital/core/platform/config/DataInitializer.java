@@ -5,7 +5,14 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.hospital.core.clinical.application.VisitReadModelService;
+import com.hospital.core.iam.MenuItem;
+import com.hospital.core.iam.MenuConfig;
+import com.hospital.core.iam.domain.Menu;
+import com.hospital.core.iam.domain.MenuAuthority;
+import com.hospital.core.iam.infrastructure.MenuAuthorityMapper;
+import com.hospital.core.iam.infrastructure.MenuMapper;
 import com.hospital.core.org.domain.Staff;
 import com.hospital.core.org.infrastructure.StaffMapper;
 import com.hospital.core.patient.domain.Patient;
@@ -13,6 +20,9 @@ import com.hospital.core.patient.infrastructure.PatientMapper;
 import com.hospital.core.platform.domain.SysUser;
 import com.hospital.core.platform.infrastructure.SysUserMapper;
 import com.hospital.core.platform.infrastructure.SysUserRoleMapper;
+
+import java.time.LocalDateTime;
+import java.util.List;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -37,10 +47,14 @@ public class DataInitializer implements CommandLineRunner {
     private final SysUserMapper sysUserMapper;
     private final SysUserRoleMapper sysUserRoleMapper;
     private final VisitReadModelService visitReadModelService;
+    private final MenuConfig menuConfig;
+    private final MenuMapper menuMapper;
+    private final MenuAuthorityMapper menuAuthorityMapper;
 
     @Override
     public void run(String... args) {
         migrateUsers();
+        migrateMenus();
         visitReadModelService.initAll();  // 初始化读模型
     }
 
@@ -99,5 +113,46 @@ public class DataInitializer implements CommandLineRunner {
 
     private boolean hasRole(Long userId, String roleCode) {
         return sysUserRoleMapper.findRoleCodesByUserId(userId).contains(roleCode);
+    }
+
+    private void migrateMenus() {
+        if (menuMapper.selectCount(new QueryWrapper<>()) > 0) {
+            log.info("[DataInitializer] 菜单已存在,跳过迁移");
+            return;
+        }
+
+        List<MenuItem> staticMenus = menuConfig.registry();
+        for (MenuItem item : staticMenus) {
+            saveMenu(item, null);
+        }
+        log.info("[DataInitializer] 静态菜单迁移完成");
+    }
+
+    private void saveMenu(MenuItem item, Long parentId) {
+        Menu menu = new Menu();
+        menu.setParentId(parentId);
+        menu.setKey(item.key());
+        menu.setTitle(item.title());
+        menu.setPath(item.path());
+        menu.setIcon(item.icon());
+        menu.setSortOrder(0);
+        menu.setVisible(true);
+        menu.setCreatedAt(LocalDateTime.now());
+        menuMapper.insert(menu);
+
+        if (item.authorities() != null) {
+            for (String authority : item.authorities()) {
+                MenuAuthority ma = new MenuAuthority();
+                ma.setMenuId(menu.getId());
+                ma.setAuthority(authority);
+                menuAuthorityMapper.insert(ma);
+            }
+        }
+
+        if (item.children() != null) {
+            for (MenuItem child : item.children()) {
+                saveMenu(child, menu.getId());
+            }
+        }
     }
 }
