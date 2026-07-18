@@ -97,7 +97,7 @@ public class PrescriptionService {
 
     /** 发药:标记处方已发药,同步回写关联医嘱为 EXECUTED。 */
     @Transactional
-    public Prescription dispense(Long prescriptionId, Long pharmacistId) {
+    public Prescription dispense(Long prescriptionId, Long pharmacistId, String remark) {
         Prescription p = prescriptionMapper.selectById(prescriptionId);
         if (p == null) throw new IllegalArgumentException("处方不存在:" + prescriptionId);
         if (!"PENDING".equals(p.getStatus())) {
@@ -116,6 +116,9 @@ public class PrescriptionService {
         p.setPharmacistId(pharmacistId);
         p.setStatus("DISPENSED");
         p.setDispensedAt(LocalDateTime.now());
+        if (remark != null && !remark.isBlank()) {
+            p.setRemark(remark);
+        }
         prescriptionMapper.updateById(p);
 
         // 更新所有明细

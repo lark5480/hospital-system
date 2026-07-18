@@ -21,9 +21,9 @@ export function createPrescription(payload: CreatePrescriptionRequest) {
   return http.post<Prescription>('/pharmacy/prescriptions', payload).then((r) => r.data)
 }
 
-export function dispensePrescription(id: number) {
+export function dispensePrescription(id: number, remark?: string) {
   // 药师身份由服务端从 JWT 派发,无需客户端传。
-  return http.post<Prescription>(`/pharmacy/prescriptions/${id}/dispense`, {}).then((r) => r.data)
+  return http.post<Prescription>(`/pharmacy/prescriptions/${id}/dispense`, { remark }).then((r) => r.data)
 }
 
 export function cancelPrescription(id: number) {

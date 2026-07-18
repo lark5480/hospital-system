@@ -111,7 +111,7 @@ class PrescriptionServiceTest {
             report.setId(99L);
             when(reportService.createAndPublish(any(), any(), any(), any(), any(), any())).thenReturn(report);
 
-            Prescription result = service.dispense(1L, 7L);
+            Prescription result = service.dispense(1L, 7L, "饭后服用，每日三次");
 
             assertThat(result.getStatus()).isEqualTo("DISPENSED");
             assertThat(result.getPharmacistId()).isEqualTo(7L);
@@ -130,7 +130,7 @@ class PrescriptionServiceTest {
             p.setStatus("DISPENSED");
             when(prescriptionMapper.selectById(1L)).thenReturn(p);
 
-            assertThatThrownBy(() -> service.dispense(1L, 7L))
+            assertThatThrownBy(() -> service.dispense(1L, 7L, null))
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("仅 PENDING");
         }
@@ -139,7 +139,7 @@ class PrescriptionServiceTest {
         @DisplayName("处方不存在 → IllegalArgumentException")
         void dispense_notFound_throws() {
             when(prescriptionMapper.selectById(999L)).thenReturn(null);
-            assertThatThrownBy(() -> service.dispense(999L, 7L))
+            assertThatThrownBy(() -> service.dispense(999L, 7L, null))
                     .isInstanceOf(IllegalArgumentException.class);
         }
     }

@@ -58,7 +58,7 @@ public class PrescriptionController {
             @RequestBody DispenseRequest req,
             HttpServletRequest request) {
         Long pharmacistId = resolvePharmacistId(request);
-        return ResponseEntity.ok(prescriptionService.dispense(id, pharmacistId));
+        return ResponseEntity.ok(prescriptionService.dispense(id, pharmacistId, req.getRemark()));
     }
 
     private Long resolvePharmacistId(HttpServletRequest request) {

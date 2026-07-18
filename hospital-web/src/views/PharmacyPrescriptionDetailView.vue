@@ -10,6 +10,11 @@ const router = useRouter()
 const id = Number(route.params.id)
 const detail = ref<PrescriptionDetail | null>(null)
 const loading = ref(false)
+const dispensing = ref(false)
+
+// 发药备注对话框
+const remarkDialogVisible = ref(false)
+const remark = ref('')
 
 const statusMeta: Record<string, { text: string; type: '' | 'success' | 'warning' | 'info' | 'danger' }> = {
   PENDING: { text: '待发药', type: 'warning' },
@@ -34,13 +39,23 @@ async function fetchDetail() {
   }
 }
 
+function openDispenseDialog() {
+  remark.value = ''
+  remarkDialogVisible.value = true
+}
+
 async function handleDispense() {
+  dispensing.value = true
   try {
-    await ElMessageBox.confirm('确认发药？', '发药确认')
-    await pharmacyApi.dispensePrescription(id)
+    await pharmacyApi.dispensePrescription(id, remark.value.trim() || undefined)
     ElMessage.success('发药完成')
+    remarkDialogVisible.value = false
     await fetchDetail()
-  } catch { /* cancelled */ }
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.message || e?.message || '发药失败')
+  } finally {
+    dispensing.value = false
+  }
 }
 
 async function handleCancel() {
@@ -61,7 +76,7 @@ onMounted(fetchDetail)
       <el-button @click="router.push('/pharmacy/prescriptions')">← 返回列表</el-button>
       <h2>处方详情 #{{ id }}</h2>
       <div>
-        <el-button v-if="detail?.prescription.status === 'PENDING'" type="primary" @click="handleDispense">发药</el-button>
+        <el-button v-if="detail?.prescription.status === 'PENDING'" type="primary" @click="openDispenseDialog">发药</el-button>
         <el-button v-if="detail?.prescription.status === 'PENDING'" type="danger" @click="handleCancel">取消</el-button>
       </div>
     </div>
@@ -95,6 +110,24 @@ onMounted(fetchDetail)
         <el-table-column prop="orderId" label="关联医嘱ID" width="100" />
       </el-table>
     </template>
+
+    <!-- 发药备注对话框 -->
+    <el-dialog v-model="remarkDialogVisible" title="发药确认" width="480px">
+      <el-form label-width="100px">
+        <el-form-item label="用药备注">
+          <el-input
+            v-model="remark"
+            type="textarea"
+            :rows="4"
+            placeholder="请输入用药注意事项（选填）"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="remarkDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="dispensing" @click="handleDispense">确认发药</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
