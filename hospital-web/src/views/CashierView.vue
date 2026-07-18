@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onActivated, onMounted, ref, computed } from 'vue'
+import { onActivated, onMounted, ref, computed, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import * as chargeApi from '@/api/charge'
 import type { ChargeVO } from '@/api/charge'
@@ -55,6 +55,8 @@ async function handlePay(visitId: number) {
 
 onMounted(fetchAll)
 onActivated(fetchAll)
+
+watch(activeTab, () => fetchAll())
 </script>
 
 <template>
