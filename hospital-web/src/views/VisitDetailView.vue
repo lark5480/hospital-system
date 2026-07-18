@@ -18,7 +18,7 @@ const orderDialog = ref(false)
 const paying = ref(false)
 const creatingRx = ref(false)
 const creatingLab = ref(false)
-const executingExamOrderId = ref<number | null>(null)
+const executingExam = ref(false)
 
 // Edit order state
 const editDialog = ref(false)
@@ -178,22 +178,17 @@ async function createLabRequisition() {
 }
 
 
-async function executeExamOrder(orderId: number) {
-  executingExamOrderId.value = orderId
+async function executeFirstExamOrder() {
+  const examOrder = store.detail?.orders.find(o => o.type === 'EXAM' && o.status === 'CREATED')
+  if (!examOrder) return
+  executingExam.value = true
   try {
-    store.detail = await apiExecuteExamOrder(visitId, orderId)
+    store.detail = await apiExecuteExamOrder(visitId, examOrder.id)
     ElMessage.success('检查已执行')
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.message || e?.message || '执行失败')
   } finally {
-    executingExamOrderId.value = null
-  }
-}
-
-async function executeFirstExamOrder() {
-  const examOrder = store.detail?.orders.find(o => o.type === 'EXAM' && o.status === 'CREATED')
-  if (examOrder) {
-    await executeExamOrder(examOrder.id)
+    executingExam.value = false
   }
 }
 
@@ -217,7 +212,7 @@ watch(() => route.params.id, (newId) => {
         <el-button type="primary" :disabled="!canEntry || !isEditable" @click="orderDialog = true">+ 追加医嘱</el-button>
         <el-button type="warning" :loading="creatingRx" :disabled="!canEntry || !isEditable || !hasMedicationOrders" @click="createPrescription">创建处方</el-button>
         <el-button type="warning" :loading="creatingLab" :disabled="!canEntry || !isEditable || !hasLabOrders" @click="createLabRequisition">创建检验申请</el-button>
-        <el-button v-if="hasExamOrders" type="success" :disabled="!canExecute" @click="executeFirstExamOrder">执行检查</el-button>
+        <el-button v-if="hasExamOrders" type="success" :loading="executingExam" :disabled="!canExecute" @click="executeFirstExamOrder">执行检查</el-button>
         <el-button type="success" :loading="paying" :disabled="!canPay || store.detail?.visit.status !== 'CONFIRMED'" @click="doPay">结算</el-button>
       </div>
     </div>
@@ -256,7 +251,7 @@ watch(() => route.params.id, (newId) => {
             <el-tag :type="orderStatusMeta[row.status].type" size="small">{{ orderStatusMeta[row.status].text }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="200">
+        <el-table-column label="操作" width="150">
           <template #default="{ row }">
             <el-button v-if="row.status === 'CREATED' && canEntry && isEditable"
               size="small" type="primary" link
@@ -264,10 +259,6 @@ watch(() => route.params.id, (newId) => {
             <el-button v-if="row.status === 'CREATED' && canEntry && isEditable"
               size="small" type="danger" link
               @click="confirmCancelOrder(row)">取消</el-button>
-            <el-button v-if="row.type === 'EXAM' && row.status === 'CREATED' && canExecute"
-              size="small" type="success"
-              :loading="executingExamOrderId === row.id"
-              @click="executeExamOrder(row.id)">执行检查</el-button>
           </template>
         </el-table-column>
       </el-table>
