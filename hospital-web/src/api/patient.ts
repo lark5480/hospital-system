@@ -65,3 +65,8 @@ export function downloadReport(id: number) {
     })
     .then((r) => r.data)
 }
+
+/** 重置患者密码为默认值(123456) */
+export function resetPatientPassword(userId: number) {
+  return http.post<{ message: string }>(`/core/iam/users/${userId}/reset-password`).then((r) => r.data)
+}

@@ -1,13 +1,15 @@
 <script setup lang="ts">
-import { onActivated, onMounted, reactive, ref, watch } from 'vue'
-import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
+import { onActivated, onMounted, reactive, ref, computed, watch } from 'vue'
+import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import * as patientApi from '@/api/patient'
 import type { Patient } from '@/types/patient'
+import { hasAuthority } from '@/stores/auth'
 
 const list = ref<Patient[]>([])
 const loading = ref(false)
 const searchKeyword = ref('')
+const canAdmin = computed(() => hasAuthority('system:admin'))
 
 const createDialog = ref(false)
 const editDialog = ref(false)
@@ -110,6 +112,22 @@ async function doEdit() {
   finally { submitting.value = false }
 }
 
+async function handleResetPassword(row: Patient) {
+  if (!row.userId) {
+    ElMessage.warning('该患者未关联登录账号，无法重置密码')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确认将患者 "${row.name}" 的密码重置为 123456？`,
+      '重置密码',
+      { confirmButtonText: '确认重置', cancelButtonText: '取消', type: 'warning' }
+    )
+    await patientApi.resetPatientPassword(row.userId)
+    ElMessage.success('密码已重置为 123456')
+  } catch { /* cancelled */ }
+}
+
 onMounted(fetchList)
 // KeepAlive 激活时刷新,保证从详情/编辑页返回列表是最新的
 onActivated(fetchList)
@@ -136,9 +154,10 @@ onActivated(fetchList)
       <el-table-column prop="idCard" label="身份证号" width="180" />
       <el-table-column prop="username" label="关联账号" width="120" />
       <el-table-column prop="createdAt" label="创建时间" width="180" />
-      <el-table-column label="操作" width="80">
+      <el-table-column label="操作" width="150">
         <template #default="{ row }">
           <el-button size="small" @click="openEdit(row)">编辑</el-button>
+          <el-button v-if="canAdmin && row.userId" size="small" type="warning" @click="handleResetPassword(row)">重置密码</el-button>
         </template>
       </el-table-column>
     </el-table>

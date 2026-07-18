@@ -119,6 +119,17 @@ public class PatientService implements PatientApi {
         if (updated.getIdCard() != null) p.setIdCard(updated.getIdCard());
         if (updated.getUsername() != null) p.setUsername(updated.getUsername());
         patientMapper.updateById(p);
+
+        // 同步更新 sys_user 表的手机号(用于登录)
+        if (p.getUserId() != null) {
+            SysUser sysUser = sysUserMapper.selectById(p.getUserId());
+            if (sysUser != null && updated.getPhone() != null) {
+                sysUser.setPhone(updated.getPhone());
+                sysUser.setName(updated.getName());
+                sysUserMapper.updateById(sysUser);
+            }
+        }
+
         return p;
     }
 

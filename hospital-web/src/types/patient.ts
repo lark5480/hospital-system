@@ -8,6 +8,7 @@ export interface Patient {
   birthday: string | null
   phone: string
   idCard: string | null
+  userId: number | null
   createdAt: string
 }
 
