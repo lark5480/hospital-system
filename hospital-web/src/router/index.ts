@@ -54,6 +54,7 @@ const router = createRouter({
         { path: 'org/departments', name: 'departments', component: () => import('@/views/DepartmentsView.vue'), meta: { title: '科室管理' } },
         { path: 'org/staff', name: 'staff', component: () => import('@/views/StaffView.vue'), meta: { title: '员工管理' } },
         { path: 'org/roles', name: 'roles', component: RoleAuthView, meta: { title: '角色权限' } },
+        { path: 'menu-manage', name: 'MenuManage', component: () => import('@/views/MenuManageView.vue'), meta: { title: '菜单管理', requiresAuth: true } },
         { path: 'cashier', name: 'cashier', component: () => import('@/views/CashierView.vue'), meta: { title: '收费管理' } }
       ]
     },

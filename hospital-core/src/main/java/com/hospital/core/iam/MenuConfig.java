@@ -48,7 +48,9 @@ public class MenuConfig {
                         new MenuItem("org-staff", "员工管理", "/org/staff",
                                 "UserFilled", ADMIN, List.of()),
                         new MenuItem("org-roles", "角色权限", "/org/roles",
-                                "Lock", ADMIN, List.of())
+                                "Lock", ADMIN, List.of()),
+                        new MenuItem("menu-manage", "菜单管理", "/menu-manage",
+                                "Menu", ADMIN, List.of())
                 )),
                 new MenuItem("files", "文件管理", "/files", "Folder", ADMIN, List.of()),
                 new MenuItem("patient", "体检预约(C端)", null, "Calendar", List.of("patient:booking"), List.of(
