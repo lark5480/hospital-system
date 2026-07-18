@@ -445,6 +445,26 @@ CREATE TABLE IF NOT EXISTS platform.sys_user_role (
     UNIQUE(user_id, role_code)
 );
 
+-- ===================== 菜单管理 =====================
+CREATE TABLE IF NOT EXISTS platform.menu (
+    id          BIGSERIAL PRIMARY KEY,
+    parent_id   BIGINT REFERENCES platform.menu(id) ON DELETE CASCADE,
+    key         VARCHAR(60) NOT NULL UNIQUE,
+    title       VARCHAR(100) NOT NULL,
+    path        VARCHAR(200),
+    icon        VARCHAR(60),
+    sort_order  INT DEFAULT 0,
+    visible     BOOLEAN DEFAULT true,
+    created_at  TIMESTAMP NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS platform.menu_authority (
+    id          BIGSERIAL PRIMARY KEY,
+    menu_id     BIGINT NOT NULL REFERENCES platform.menu(id) ON DELETE CASCADE,
+    authority   VARCHAR(60) NOT NULL,
+    UNIQUE(menu_id, authority)
+);
+
 -- ===================== RBAC:角色/权限(平台基础) =====================
 -- 角色:对应医护岗位,管理员可为其配置可见菜单(authority 列表)
 CREATE TABLE IF NOT EXISTS platform.role (

@@ -723,3 +723,5 @@ COMMENT ON COLUMN clinical.medical_record.finalized_at IS '终诊时间';
 CREATE INDEX IF NOT EXISTS idx_mr_visit_id ON clinical.medical_record(visit_id);
 CREATE INDEX IF NOT EXISTS idx_mr_patient_id ON clinical.medical_record(patient_id);
 CREATE INDEX IF NOT EXISTS idx_mr_diagnosis ON clinical.medical_record USING GIN (diagnosis);
+
+-- 初始菜单数据（将由DataInitializer从MenuConfig迁移）
