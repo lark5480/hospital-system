@@ -14,6 +14,11 @@ export interface LabRequisition {
   reportedAt: string | null
 }
 
+export interface LabRequisitionListItem extends LabRequisition {
+  patientName: string | null
+  doctorName: string | null
+}
+
 export interface LabResultItem {
   id: number
   requisitionId: number

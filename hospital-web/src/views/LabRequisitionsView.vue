@@ -4,10 +4,10 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import * as labApi from '@/api/lab'
-import type { LabRequisition } from '@/types/lab'
+import type { LabRequisitionListItem } from '@/types/lab'
 
 const router = useRouter()
-const list = ref<LabRequisition[]>([])
+const list = ref<LabRequisitionListItem[]>([])
 const loading = ref(false)
 const filterStatus = ref('')
 
@@ -43,10 +43,14 @@ onActivated(fetchList)
       </div>
     </div>
     <el-table :data="list" v-loading="loading" border stripe>
-      <el-table-column prop="id" label="申请号" width="100" />
-      <el-table-column prop="visitId" label="就诊ID" width="80" />
-      <el-table-column prop="patientId" label="患者ID" width="80" />
-      <el-table-column prop="doctorId" label="医生ID" width="80" />
+      <el-table-column prop="id" label="申请号" width="80" />
+      <el-table-column prop="visitId" label="就诊号" width="80" />
+      <el-table-column label="患者" width="100">
+        <template #default="{ row }">{{ row.patientName || row.patientId }}</template>
+      </el-table-column>
+      <el-table-column label="医生" width="100">
+        <template #default="{ row }">{{ row.doctorName || row.doctorId }}</template>
+      </el-table-column>
       <el-table-column label="状态" width="100">
         <template #default="{ row }">
           <el-tag :type="statusMeta[row.status] || ''">{{ statusText[row.status] || row.status }}</el-tag>

@@ -41,12 +41,14 @@ class LabServiceTest {
     @Mock ChargeService chargeService;
     @Mock ReportService reportService;
     @Mock ApplicationEventPublisher eventPublisher;
+    @Mock com.hospital.core.patient.application.PatientService patientService;
+    @Mock com.hospital.core.org.application.StaffService staffService;
 
     LabService service;
 
     @BeforeEach
     void setUp() {
-        service = new LabService(requisitionMapper, resultItemMapper, orderMapper, visitMapper, visitService, chargeService, reportService, eventPublisher);
+        service = new LabService(requisitionMapper, resultItemMapper, orderMapper, visitMapper, visitService, chargeService, reportService, eventPublisher, patientService, staffService);
     }
 
     @Nested

@@ -1,6 +1,7 @@
 package com.hospital.core.lab.api;
 
 import com.hospital.core.lab.application.LabRequisitionDetail;
+import com.hospital.core.lab.application.LabRequisitionListItem;
 import com.hospital.core.lab.application.LabService;
 import com.hospital.core.lab.domain.LabRequisition;
 import com.hospital.core.platform.annotation.AuditLog;
@@ -19,9 +20,9 @@ public class LabController {
     private final LabService labService;
 
     @GetMapping("/api/lab/requisitions")
-    public ResponseEntity<List<LabRequisition>> list(
+    public ResponseEntity<List<LabRequisitionListItem>> list(
             @RequestParam(required = false) String status) {
-        return ResponseEntity.ok(labService.list(status));
+        return ResponseEntity.ok(labService.listWithDetail(status));
     }
 
     @GetMapping("/api/lab/requisitions/{id}")

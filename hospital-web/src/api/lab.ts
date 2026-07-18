@@ -1,9 +1,9 @@
 import http from './http'
-import type { LabRequisition, LabRequisitionDetail, CreateRequisitionRequest, SubmitResultsRequest } from '@/types/lab'
+import type { LabRequisitionListItem, LabRequisitionDetail, CreateRequisitionRequest, SubmitResultsRequest } from '@/types/lab'
 
 export function listRequisitions(status?: string) {
   const params = status ? { status } : {}
-  return http.get<LabRequisition[]>('/lab/requisitions', { params }).then((r) => r.data)
+  return http.get<LabRequisitionListItem[]>('/lab/requisitions', { params }).then((r) => r.data)
 }
 
 export function getRequisition(id: number) {

@@ -11,6 +11,8 @@ import com.hospital.core.lab.infrastructure.LabRequisitionMapper;
 import com.hospital.core.lab.infrastructure.LabResultItemMapper;
 import com.hospital.core.clinical.domain.Visit;
 import com.hospital.core.clinical.infrastructure.VisitMapper;
+import com.hospital.core.org.application.StaffService;
+import com.hospital.core.patient.application.PatientService;
 import com.hospital.core.report.application.ReportService;
 import com.hospital.core.report.domain.Report;
 import com.hospital.core.report.domain.ReportPdfEvent;
@@ -40,6 +42,8 @@ public class LabService {
     private final ChargeService chargeService;
     private final ReportService reportService;
     private final ApplicationEventPublisher eventPublisher;
+    private final PatientService patientService;
+    private final StaffService staffService;
 
     @Transactional
     public LabRequisition createFromVisit(Long visitId, Long doctorId, List<Long> orderIds) {
@@ -171,6 +175,43 @@ public class LabService {
                 .orderByDesc(LabRequisition::getCreatedAt);
         if (status != null && !status.isBlank()) q.eq(LabRequisition::getStatus, status);
         return requisitionMapper.selectList(q);
+    }
+
+    /**
+     * 检验申请列表(含患者/医生名称)
+     */
+    public List<LabRequisitionListItem> listWithDetail(String status) {
+        List<LabRequisition> requisitions = list(status);
+        return requisitions.stream().map(req -> {
+            LabRequisitionListItem item = new LabRequisitionListItem();
+            item.setId(req.getId());
+            item.setVisitId(req.getVisitId());
+            item.setPatientId(req.getPatientId());
+            item.setDoctorId(req.getDoctorId());
+            item.setTechnicianId(req.getTechnicianId());
+            item.setStatus(req.getStatus());
+            item.setRemark(req.getRemark());
+            item.setCreatedAt(req.getCreatedAt());
+            item.setSampledAt(req.getSampledAt());
+            item.setReportedAt(req.getReportedAt());
+
+            // 解析患者名称
+            try {
+                item.setPatientName(patientService.getName(req.getPatientId()));
+            } catch (Exception e) {
+                item.setPatientName(null);
+            }
+
+            // 解析医生名称
+            try {
+                var doctor = staffService.get(req.getDoctorId());
+                item.setDoctorName(doctor != null ? doctor.getName() : null);
+            } catch (Exception e) {
+                item.setDoctorName(null);
+            }
+
+            return item;
+        }).toList();
     }
 
     public LabRequisitionDetail getDetail(Long id) {
