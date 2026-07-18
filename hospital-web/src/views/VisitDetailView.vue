@@ -43,6 +43,8 @@ const hasMedicationOrders = computed(() =>
   store.detail?.orders.some(o => o.type === 'MEDICATION' && o.status === 'CREATED'))
 const hasLabOrders = computed(() =>
   store.detail?.orders.some(o => o.type === 'LAB' && o.status === 'CREATED'))
+const hasExamOrders = computed(() =>
+  store.detail?.orders.some(o => o.type === 'EXAM' && o.status === 'CREATED'))
 const orderForm = reactive<{ type: OrderType; itemName: string; quantity: number; unitPrice: number; executionDeptId: number }>({
   type: 'MEDICATION',
   itemName: '',
@@ -188,6 +190,13 @@ async function executeExamOrder(orderId: number) {
   }
 }
 
+async function executeFirstExamOrder() {
+  const examOrder = store.detail?.orders.find(o => o.type === 'EXAM' && o.status === 'CREATED')
+  if (examOrder) {
+    await executeExamOrder(examOrder.id)
+  }
+}
+
 onMounted(() => {
   store.fetchDetail(visitId)
   loadDepartments()
@@ -208,6 +217,7 @@ watch(() => route.params.id, (newId) => {
         <el-button type="primary" :disabled="!canEntry || !isEditable" @click="orderDialog = true">+ 追加医嘱</el-button>
         <el-button type="warning" :loading="creatingRx" :disabled="!canEntry || !isEditable || !hasMedicationOrders" @click="createPrescription">创建处方</el-button>
         <el-button type="warning" :loading="creatingLab" :disabled="!canEntry || !isEditable || !hasLabOrders" @click="createLabRequisition">创建检验申请</el-button>
+        <el-button v-if="hasExamOrders" type="success" :disabled="!canExecute" @click="executeFirstExamOrder">执行检查</el-button>
         <el-button type="success" :loading="paying" :disabled="!canPay || store.detail?.visit.status !== 'CONFIRMED'" @click="doPay">结算</el-button>
       </div>
     </div>

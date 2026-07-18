@@ -42,10 +42,6 @@ public class ChargeController {
         List<Charge> all = chargeMapper.selectList(null);
         return all.stream()
                 .filter(c -> payStatus.equals(c.getPayStatus()))
-                .filter(c -> {
-                    var visit = visitService.get(c.getVisitId());
-                    return visit != null && !"CREATED".equals(visit.getStatus());
-                })
                 .map(this::toVO)
                 .toList();
     }
