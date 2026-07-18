@@ -1,6 +1,9 @@
 package com.hospital.core.iam;
 
-import com.hospital.core.platform.infrastructure.RoleAuthorityMapper;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.hospital.core.iam.domain.Menu;
+import com.hospital.core.iam.infrastructure.MenuAuthorityMapper;
+import com.hospital.core.iam.infrastructure.MenuMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.authentication.AnonymousAuthenticationToken;
 import org.springframework.security.core.Authentication;
@@ -9,29 +12,48 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 
 import java.util.Collection;
+import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
- * 菜单裁剪服务:按当前登录用户持有的 authorities 过滤 {@link MenuConfig} 中的导航树。
+ * 菜单裁剪服务:按当前登录用户持有的 authorities 过滤数据库中的导航树。
  * - 已登录态:从 SecurityContext 取 authority,仅保留有权限可见的节点。
  * - 匿名/未登录态:返回完整菜单(兼容本地联调零摩擦)。
  *
- * 角色↔权限映射已入库(platform.role_authority),管理员后台可调,不再硬编码。
+ * 菜单数据从 platform.menu + platform.menu_authority 表加载,管理员后台可调,不再硬编码。
  */
 @Service
 @RequiredArgsConstructor
 public class MenuService {
 
-    private final MenuConfig menuConfig;
-    private final RoleAuthorityMapper roleAuthorityMapper;
+    private final MenuMapper menuMapper;
+    private final MenuAuthorityMapper menuAuthorityMapper;
 
     public java.util.List<MenuItem> currentMenu() {
         Collection<? extends GrantedAuthority> authorities = currentAuthorities();
-        Set<String> authoritySet = authorities.stream().map(GrantedAuthority::getAuthority).collect(Collectors.toSet());
-        return menuConfig.registry().stream()
-                .map(item -> filter(item, authoritySet))
+        Set<String> authoritySet = authorities.stream()
+                .map(GrantedAuthority::getAuthority)
+                .collect(Collectors.toSet());
+
+        // 从数据库加载菜单树
+        List<Menu> allMenus = menuMapper.selectList(
+                new QueryWrapper<Menu>()
+                        .eq("visible", true)
+                        .orderByAsc("sort_order"));
+
+        // 加载每个菜单的权限
+        for (Menu menu : allMenus) {
+            menu.setAuthorities(menuAuthorityMapper.findAuthoritiesByMenuId(menu.getId()));
+        }
+
+        // 构建树形结构
+        List<Menu> menuTree = buildTree(allMenus, null);
+
+        // 转换为MenuItem并裁剪
+        return menuTree.stream()
+                .map(menu -> toMenuItem(menu, authoritySet))
                 .filter(Objects::nonNull)
                 .toList();
     }
@@ -44,24 +66,27 @@ public class MenuService {
         return auth.getAuthorities();
     }
 
-    private MenuItem filter(MenuItem item, Set<String> authorities) {
-        // 未登录/匿名 → 全量可见
-        if (authorities.isEmpty()) {
-            return item;
-        }
+    private List<Menu> buildTree(List<Menu> allMenus, Long parentId) {
+        return allMenus.stream()
+                .filter(menu -> Objects.equals(menu.getParentId(), parentId))
+                .peek(menu -> menu.setChildren(buildTree(allMenus, menu.getId())))
+                .toList();
+    }
 
-        java.util.List<MenuItem> visibleChildren = item.children().stream()
-                .map(child -> filter(child, authorities))
+    private MenuItem toMenuItem(Menu menu, Set<String> authorities) {
+        List<MenuItem> visibleChildren = menu.getChildren().stream()
+                .map(child -> toMenuItem(child, authorities))
                 .filter(Objects::nonNull)
                 .toList();
 
         if (!visibleChildren.isEmpty()) {
-            // 分组节点:只要仍有可见子项即保留(自身权限不作要求)
-            return new MenuItem(item.key(), item.title(), item.path(), item.icon(), item.authorities(), visibleChildren);
+            return new MenuItem(menu.getKey(), menu.getTitle(), menu.getPath(),
+                    menu.getIcon(), menu.getAuthorities(), visibleChildren);
         }
 
-        boolean selfVisible = item.authorities().isEmpty()
-                || item.authorities().stream().anyMatch(authorities::contains);
-        return selfVisible ? item : null;
+        boolean selfVisible = menu.getAuthorities() == null || menu.getAuthorities().isEmpty()
+                || menu.getAuthorities().stream().anyMatch(authorities::contains);
+        return selfVisible ? new MenuItem(menu.getKey(), menu.getTitle(), menu.getPath(),
+                menu.getIcon(), menu.getAuthorities(), List.of()) : null;
     }
 }
