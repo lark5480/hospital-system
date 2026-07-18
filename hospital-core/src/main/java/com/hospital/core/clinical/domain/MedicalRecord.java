@@ -4,7 +4,7 @@ import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
-import com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler;
+import com.hospital.core.clinical.infrastructure.JsonbTypeHandler;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Data;
 
@@ -37,15 +37,15 @@ public class MedicalRecord {
 
     // JSONB 字段
     @JsonFormat(shape = JsonFormat.Shape.OBJECT)
-    @TableField(typeHandler = JacksonTypeHandler.class)
+    @TableField(typeHandler = JsonbTypeHandler.class)
     private Map<String, Object> physicalExam;     // 体格检查
 
     @JsonFormat(shape = JsonFormat.Shape.ARRAY)
-    @TableField(typeHandler = JacksonTypeHandler.class)
+    @TableField(typeHandler = JsonbTypeHandler.class)
     private List<Map<String, Object>> auxiliaryExam;  // 辅助检查
 
     @JsonFormat(shape = JsonFormat.Shape.ARRAY)
-    @TableField(typeHandler = JacksonTypeHandler.class)
+    @TableField(typeHandler = JsonbTypeHandler.class)
     private List<Map<String, Object>> diagnosis;      // 诊断
 
     private String treatmentPlan;        // 治疗计划

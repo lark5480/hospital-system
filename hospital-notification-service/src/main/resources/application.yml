@@ -1,0 +1,15 @@
+server:
+  port: 8102
+
+spring:
+  application:
+    name: hospital-notification-service
+  rabbitmq:
+    host: ${RABBIT_HOST:localhost}
+    port: ${RABBIT_PORT:5672}
+    username: ${RABBIT_USER:admin}
+    password: ${RABBIT_PASSWORD:admin123}
+
+logging:
+  level:
+    com.hospital: debug

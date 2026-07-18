@@ -11,15 +11,13 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 
 @RestController
-@RequestMapping("/fhir/Encounter")
 @RequiredArgsConstructor
 public class FhirEncounterController {
 
     private final VisitService visitService;
     private final EncounterConverter encounterConverter;
 
-    /** GET /fhir/Encounter/{id} */
-    @GetMapping("/{id}")
+    @GetMapping("/fhir/Encounter/{id}")
     public ResponseEntity<FhirEncounter> getById(@PathVariable Long id) {
         Visit visit = visitService.get(id);
         if (visit == null) {
@@ -28,8 +26,7 @@ public class FhirEncounterController {
         return ResponseEntity.ok(encounterConverter.toFhir(visit));
     }
 
-    /** GET /fhir/Encounter?patient=X */
-    @GetMapping
+    @GetMapping("/fhir/Encounter")
     public ResponseEntity<List<FhirEncounter>> search(
             @RequestParam(required = false) Long patient) {
         List<Visit> visits;

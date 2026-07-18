@@ -1,0 +1,37 @@
+# Maven
+target/
+logs/
+**/logs/
+!.mvn/wrapper/maven-wrapper.jar
+
+# Java / IDE
+*.class
+*.log
+.idea/
+*.iml
+.project
+.classpath
+
+# Env / secrets(绝不提交真实密钥)
+.env
+.env.local
+*.secret
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node / frontend
+node_modules/
+dist/
+*.local
+
+# 本地工具 / AI 助手 / 项目私有配置（不提交 GitHub）
+.claude/
+.codex/
+.mimocode/
+.qoder/
+.vscode/
+.workbuddy/
+docs/compose/
+# 注意：.github/ 不忽略，保留 GitHub Actions CI（.github/workflows/ci.yml）

@@ -10,14 +10,12 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 
 @RestController
-@RequestMapping("/api/core/medical-records")
 @RequiredArgsConstructor
 public class MedicalRecordController {
 
     private final MedicalRecordService medicalRecordService;
 
-    /** GET /api/core/medical-records?visitId=X */
-    @GetMapping
+    @GetMapping("/api/core/medical-records")
     public ResponseEntity<MedicalRecord> get(@RequestParam Long visitId) {
         MedicalRecord record = medicalRecordService.get(visitId);
         if (record == null) {
@@ -26,8 +24,7 @@ public class MedicalRecordController {
         return ResponseEntity.ok(record);
     }
 
-    /** GET /api/core/medical-records/{id} */
-    @GetMapping("/{id}")
+    @GetMapping("/api/core/medical-records/{id}")
     public ResponseEntity<MedicalRecord> getById(@PathVariable Long id) {
         MedicalRecord record = medicalRecordService.getById(id);
         if (record == null) {
@@ -36,31 +33,27 @@ public class MedicalRecordController {
         return ResponseEntity.ok(record);
     }
 
-    /** POST /api/core/medical-records?visitId=X */
     @PreAuthorize("hasAuthority('visit:entry')")
-    @PostMapping
+    @PostMapping("/api/core/medical-records")
     public ResponseEntity<MedicalRecord> save(
             @RequestParam Long visitId,
             @RequestBody MedicalRecord record) {
         return ResponseEntity.ok(medicalRecordService.save(visitId, record));
     }
 
-    /** PUT /api/core/medical-records/{visitId}/finalize */
     @PreAuthorize("hasAuthority('visit:entry')")
-    @PutMapping("/{visitId}/finalize")
+    @PutMapping("/api/core/medical-records/{visitId}/finalize")
     public ResponseEntity<MedicalRecord> finalize(@PathVariable Long visitId) {
         return ResponseEntity.ok(medicalRecordService.finalize(visitId));
     }
 
-    /** GET /api/core/medical-records/patient/{patientId} */
-    @GetMapping("/patient/{patientId}")
+    @GetMapping("/api/core/medical-records/patient/{patientId}")
     public ResponseEntity<List<MedicalRecord>> listByPatient(@PathVariable Long patientId) {
         return ResponseEntity.ok(medicalRecordService.listByPatientId(patientId));
     }
 
-    /** DELETE /api/core/medical-records/{visitId} */
     @PreAuthorize("hasAuthority('visit:entry')")
-    @DeleteMapping("/{visitId}")
+    @DeleteMapping("/api/core/medical-records/{visitId}")
     public ResponseEntity<Void> delete(@PathVariable Long visitId) {
         medicalRecordService.delete(visitId);
         return ResponseEntity.noContent().build();

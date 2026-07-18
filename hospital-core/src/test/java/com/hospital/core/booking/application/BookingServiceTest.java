@@ -1,0 +1,144 @@
+package com.hospital.core.booking.application;
+
+import com.hospital.core.booking.domain.Appointment;
+import com.hospital.core.booking.domain.AppointmentCreatedEvent;
+import com.hospital.core.booking.domain.ExamItem;
+import com.hospital.core.booking.infrastructure.AppointmentMapper;
+import com.hospital.core.booking.infrastructure.ExamItemMapper;
+import com.hospital.core.booking.infrastructure.ExamPackageMapper;
+import com.hospital.core.booking.infrastructure.SlotMapper;
+import com.hospital.core.patient.api.PatientApi;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Captor;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.context.ApplicationEventPublisher;
+
+import java.util.List;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.isA;
+import static org.mockito.Mockito.*;
+
+/**
+ * BookingService 核心路径:原子占号 + 预约创建。
+ * <p>
+ * 覆盖场景:
+ * - 号源充足 → 占号成功 → INSERT 预约 + 发布事件
+ * - 号源已满 → 占号失败 → IllegalStateException(事务回滚,零副作用)
+ */
+@ExtendWith(MockitoExtension.class)
+class BookingServiceTest {
+
+    @Mock SlotMapper slotMapper;
+    @Mock AppointmentMapper appointmentMapper;
+    @Mock ExamPackageMapper packageMapper;
+    @Mock ExamItemMapper itemMapper;
+    @Mock PatientApi patientApi;
+    @Mock ApplicationEventPublisher publisher;
+
+    @Captor ArgumentCaptor<Appointment> appointmentCaptor;
+    @Captor ArgumentCaptor<AppointmentCreatedEvent> eventCaptor;
+
+    BookingService service;
+
+    @BeforeEach
+    void setUp() {
+        service = new BookingService(packageMapper, itemMapper, slotMapper,
+                appointmentMapper, patientApi, publisher);
+    }
+
+    @Nested
+    @DisplayName("原子占号")
+    class SlotOccupation {
+
+        private final Long slotId = 1L;
+        private final Long patientId = 42L;
+        private final Long packageId = 7L;
+
+        @Test
+        @DisplayName("号源充足 → 占号成功 → INSERT 预约 + 发布事件")
+        void book_success() {
+            when(slotMapper.incrementBooked(slotId)).thenReturn(1);
+            when(itemMapper.selectList(any())).thenReturn(List.of(
+                    item("采血室", "血常规", 1),
+                    item("B超室", "腹部B超", 2)));
+            when(patientApi.getName(patientId)).thenReturn("张三");
+
+            Appointment result = service.book(patientId, packageId, slotId);
+
+            // 占号调用
+            verify(slotMapper).incrementBooked(slotId);
+
+            // INSERT 的预约字段
+            verify(appointmentMapper).insert(appointmentCaptor.capture());
+            Appointment saved = appointmentCaptor.getValue();
+            assertThat(saved.getPatientId()).isEqualTo(patientId);
+            assertThat(saved.getPackageId()).isEqualTo(packageId);
+            assertThat(saved.getSlotId()).isEqualTo(slotId);
+            assertThat(saved.getStatus()).isEqualTo("BOOKED");
+            assertThat(saved.getCreatedAt()).isNotNull();
+
+            // 返回值(MyBatis-Plus 自增 ID 在 mock 环境不回填,只验证业务字段)
+            assertThat(result.getStatus()).isEqualTo("BOOKED");
+
+            // 事件发布
+            verify(publisher).publishEvent(eventCaptor.capture());
+            AppointmentCreatedEvent event = eventCaptor.getValue();
+            assertThat(event.patientId()).isEqualTo(patientId);
+            assertThat(event.patientName()).isEqualTo("张三");
+            assertThat(event.items()).hasSize(2);
+        }
+
+        @Test
+        @DisplayName("号源已满(incrementBooked=0) → IllegalStateException → 无 INSERT 无事件")
+        void book_slotFull_throws() {
+            when(slotMapper.incrementBooked(slotId)).thenReturn(0);
+
+            assertThatThrownBy(() -> service.book(patientId, packageId, slotId))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessage("号源已满");
+
+            verify(appointmentMapper, never()).insert(isA(Appointment.class));
+            verify(publisher, never()).publishEvent(any());
+        }
+
+        @Test
+        @DisplayName("并发:第一个请求成功,第二个号源已满")
+        void book_concurrent_oneSucceeds() {
+            when(itemMapper.selectList(any())).thenReturn(List.of(
+                    item("采血室", "血常规", 1),
+                    item("B超室", "腹部B超", 2)));
+            when(patientApi.getName(patientId)).thenReturn("张三");
+            when(slotMapper.incrementBooked(slotId))
+                    .thenReturn(1)   // 第一个请求
+                    .thenReturn(0);  // 第二个请求
+
+            // 第一个请求 → 成功
+            Appointment result = service.book(patientId, packageId, slotId);
+            assertThat(result.getStatus()).isEqualTo("BOOKED");
+
+            // 重置 mock 以模拟独立事务
+            reset(appointmentMapper);
+            // 第二个请求 → 号源已满
+            assertThatThrownBy(() -> service.book(patientId, packageId, slotId))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessage("号源已满");
+            verify(appointmentMapper, never()).insert(isA(Appointment.class));
+        }
+    }
+
+    private static ExamItem item(String station, String name, int orderNo) {
+        var i = new ExamItem();
+        i.setStation(station);
+        i.setName(name);
+        i.setOrderNo(orderNo);
+        return i;
+    }
+}

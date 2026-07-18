@@ -1,0 +1,16 @@
+server:
+  port: 8103
+
+spring:
+  application:
+    name: hospital-file-service
+
+minio:
+  endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
+  access-key: ${MINIO_ACCESS_KEY:minioadmin}
+  secret-key: ${MINIO_SECRET_KEY:minioadmin}
+  bucket: hospital
+
+logging:
+  level:
+    com.hospital: debug

@@ -22,7 +22,6 @@ import com.hospital.core.clinical.infrastructure.ChargeMapper;
 import com.hospital.core.clinical.infrastructure.OrderMapper;
 import com.hospital.core.clinical.infrastructure.VisitMapper;
 import com.hospital.core.clinical.infrastructure.VisitReadModelMapper;
-import com.hospital.core.clinical.application.ChargeService;
 import com.hospital.core.org.application.DepartmentService;
 import com.hospital.core.org.application.StaffService;
 import com.hospital.core.patient.application.PatientService;
@@ -32,7 +31,7 @@ import lombok.RequiredArgsConstructor;
 @Service
 @RequiredArgsConstructor
 public class VisitService {
-
+    
     private final VisitMapper visitMapper;
     private final OrderMapper orderMapper;
     private final ChargeMapper chargeMapper;

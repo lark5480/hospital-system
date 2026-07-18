@@ -1,7 +1,5 @@
 package com.hospital.core.platform.config;
 
-import java.util.List;
-
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
@@ -29,7 +27,7 @@ import lombok.extern.slf4j.Slf4j;
 @Component
 @RequiredArgsConstructor
 public class DataInitializer implements CommandLineRunner {
-
+    
     /** 默认密码,登录后提示修改。 */
     public static final String DEFAULT_PASSWORD = "123456";
 

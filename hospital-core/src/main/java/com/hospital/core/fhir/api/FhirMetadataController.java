@@ -3,18 +3,15 @@ package com.hospital.core.fhir.api;
 import com.hospital.core.fhir.domain.FhirCapabilityStatement;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.LocalDateTime;
 import java.util.List;
 
 @RestController
-@RequestMapping("/fhir")
 public class FhirMetadataController {
 
-    /** GET /fhir/metadata */
-    @GetMapping("/metadata")
+    @GetMapping("/fhir/metadata")
     public ResponseEntity<FhirCapabilityStatement> getMetadata() {
         FhirCapabilityStatement cs = new FhirCapabilityStatement();
         cs.setDate(LocalDateTime.now().toString());

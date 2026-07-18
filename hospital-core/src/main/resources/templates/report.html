@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8"/>
+    <title th:text="${title}">体检报告</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: 'Microsoft YaHei', 'SimSun', sans-serif;
+            color: #1f2d3d;
+            margin: 0;
+            padding: 48px 56px;
+            font-size: 13px;
+            line-height: 1.9;
+        }
+        .doc-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+            border-bottom: 3px solid #2c6bed;
+            padding-bottom: 14px;
+            margin-bottom: 24px;
+        }
+        .doc-title { font-size: 24px; font-weight: 700; color: #2c6bed; margin: 0; }
+        .doc-meta { font-size: 12px; color: #6b7785; text-align: right; }
+        .info-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px 32px;
+            background: #f5f7fa;
+            border-radius: 8px;
+            padding: 16px 20px;
+            margin-bottom: 24px;
+        }
+        .info-grid span { color: #6b7785; }
+        .info-grid b { color: #1f2d3d; font-weight: 600; }
+        .content h1 { font-size: 18px; color: #2c6bed; border-left: 4px solid #2c6bed; padding-left: 10px; margin: 22px 0 10px; }
+        .content h2 { font-size: 15px; margin: 18px 0 8px; }
+        .content p { margin: 8px 0; }
+        .content ul { margin: 8px 0; padding-left: 22px; }
+        .content li { margin: 4px 0; }
+        .content hr { border: none; border-top: 1px solid #e3e8ef; margin: 18px 0; }
+        .content strong { color: #1f2d3d; }
+        .doc-footer {
+            margin-top: 40px;
+            padding-top: 14px;
+            border-top: 1px solid #e3e8ef;
+            font-size: 11px;
+            color: #9aa5b1;
+            text-align: center;
+        }
+        .seal {
+            position: absolute;
+            right: 64px;
+            bottom: 90px;
+            color: #2c6bed;
+            border: 2px solid #2c6bed;
+            border-radius: 50%;
+            width: 96px;
+            height: 96px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            opacity: 0.25;
+            transform: rotate(-18deg);
+        }
+    </style>
+</head>
+<body>
+<div class="doc-header">
+    <h1 class="doc-title" th:text="${title}">体检报告</h1>
+    <div class="doc-meta">
+        <div>生成时间: <span th:text="${generatedAt}"></span></div>
+        <div>文档编号: REP-<span th:text="${reportId}"></span></div>
+    </div>
+</div>
+
+<div class="info-grid">
+    <div><span>患者姓名:</span> <b th:text="${patientName}">—</b></div>
+    <div><span>报告类型:</span> <b>体检报告</b></div>
+</div>
+
+<div class="content" th:utext="${contentHtml}"></div>
+
+<div class="doc-footer">
+    本报告由医院系统集成平台自动生成,仅供健康参考,不作为临床诊断唯一依据。
+</div>
+</body>
+</html>
