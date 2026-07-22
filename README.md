@@ -48,7 +48,7 @@ browser ──► hospital-web :5173
 | `/registration` `/registration/screen` | RegistrationView / OutpatientScreenView | clinical |
 | `/notifications` | NotificationView | notification |
 | `/files` | FileView | file |
-| `/patient/booking` `/patient/appointments` `/patient/my-queue` `/patient/my-reports` | 对应 4 个 View | booking / booking / dispatch / report |
+| `/patient/registration` `/patient/booking` `/patient/appointments` `/patient/my-queue` `/patient/my-reports` | 对应 5 个 View | clinical / booking / booking / dispatch / report |
 | `/patients` | PatientsView | patient |
 | `/dispatch` `/dispatch/screen` | DispatchView / ScreenView | dispatch |
 | `/pharmacy/prescriptions` `/pharmacy/prescriptions/:id` | 对应 2 个 View | pharmacy |
@@ -127,6 +127,7 @@ npm run dev
 | `13800000003` | `123456` | nurse(NURSE) | 检验录入 / 检查执行(order:execute) |
 | `13800000004` | `123456` | cashier(CASHIER) | 收费(charge:pay);**不能新建就诊** |
 | `13800000006` | `123456` | pharmacist(PHARMACIST) | 发药(pharmacy:dispense) |
+| `13800000010` | `123456` | nurse(NURSE)·检验科 | 检验/检查执行(order:execute),演示按执行科室路由 |
 | `13800000000` | `123456` | admin(ADMIN) + patient(PATIENT) | 系统管理 + 角色权限配置;同时带患者角色可走 C 端预约 |
 | `13700000000` | `123456` | patient(PATIENT) | 体检预约 / 查看自身数据(C 端) |
 
@@ -195,6 +196,7 @@ hospital-system/
 - **申请**:从就诊的检验(type=LAB)医嘱自动聚合,生成 requisition + 明细。
 - **录入结果**:在 `LabRequisitionDetailView` 录入每项结果(value/unit/reference)。
 - **取消**:取消申请并冲销。
+- **科室路由**:检验/检查医嘱带执行科室(`executionDeptId`),检验申请按执行科室过滤到对应科室人员处理。
 
 #### 体检预约(套餐→号源→预约)
 - **预约**:患者选套餐 → 选日期/时段 → 后端 `book()` 在 DB 行级锁下原子占号(`incrementBooked`,保证 `booked < capacity`)。
