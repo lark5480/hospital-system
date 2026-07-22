@@ -33,7 +33,6 @@ class VisitServiceTest {
     @Mock VisitMapper visitMapper;
     @Mock OrderMapper orderMapper;
     @Mock ChargeMapper chargeMapper;
-    @Mock ChargeService chargeService;
     @Mock ApplicationEventPublisher eventPublisher;
     @Mock PatientService patientService;
     @Mock StaffService staffService;
@@ -45,7 +44,7 @@ class VisitServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new VisitService(visitMapper, orderMapper, chargeMapper, chargeService,
+        service = new VisitService(visitMapper, orderMapper, chargeMapper,
                 eventPublisher, patientService, staffService, departmentService,
                 readModelService, readModelMapper);
     }

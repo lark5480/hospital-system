@@ -1,21 +1,21 @@
 package com.hospital.core.clinical;
 
-import com.hospital.core.clinical.application.PageResult;
-import com.hospital.core.clinical.application.VisitDetail;
-import com.hospital.core.clinical.application.VisitReadModelService;
-import com.hospital.core.clinical.application.VisitService;
-import com.hospital.core.clinical.domain.Order;
-import com.hospital.core.clinical.domain.Visit;
-import com.hospital.core.clinical.infrastructure.VisitReadModelMapper;
+import static org.assertj.core.api.Assertions.assertThat;
+
+import java.math.BigDecimal;
+import java.util.List;
+
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.math.BigDecimal;
-import java.util.List;
-
-import static org.assertj.core.api.Assertions.assertThat;
+import com.hospital.core.clinical.application.PageResult;
+import com.hospital.core.clinical.application.VisitDetail;
+import com.hospital.core.clinical.application.VisitService;
+import com.hospital.core.clinical.domain.Order;
+import com.hospital.core.clinical.domain.Visit;
+import com.hospital.core.clinical.infrastructure.VisitReadModelMapper;
 
 @SpringBootTest
 @Transactional
@@ -23,9 +23,6 @@ class VisitReadModelTest {
 
     @Autowired
     private VisitService visitService;
-    
-    @Autowired
-    private VisitReadModelService readModelService;
     
     @Autowired
     private VisitReadModelMapper readModelMapper;

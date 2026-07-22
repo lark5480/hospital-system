@@ -1,20 +1,20 @@
 package com.hospital.core.fhir.converter;
 
-import com.hospital.core.clinical.domain.Visit;
-import com.hospital.core.fhir.domain.FhirEncounter;
-import com.hospital.core.org.application.DepartmentService;
-import com.hospital.core.org.application.StaffService;
-import lombok.RequiredArgsConstructor;
+import java.util.List;
+
 import org.springframework.stereotype.Component;
 
-import java.util.List;
+import com.hospital.core.clinical.domain.Visit;
+import com.hospital.core.fhir.domain.FhirEncounter;
+import com.hospital.core.org.application.StaffService;
+
+import lombok.RequiredArgsConstructor;
 
 @Component
 @RequiredArgsConstructor
 public class EncounterConverter {
     
     private final StaffService staffService;
-    private final DepartmentService departmentService;
     
     public FhirEncounter toFhir(Visit visit) {
         if (visit == null) return null;

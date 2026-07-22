@@ -40,7 +40,6 @@ public class VisitService {
     private final VisitMapper visitMapper;
     private final OrderMapper orderMapper;
     private final ChargeMapper chargeMapper;
-    private final ChargeService chargeService;
     private final ApplicationEventPublisher eventPublisher;
     private final PatientService patientService;
     private final StaffService staffService;
