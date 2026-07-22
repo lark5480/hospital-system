@@ -36,6 +36,9 @@ public class AuditLogAspect {
         log.setActor(currentUser());
         log.setAction(auditLog.action());
         log.setTarget(buildTarget(jp, result));
+        if (!auditLog.detail().isEmpty()) {
+            log.setDetail(auditLog.detail());
+        }
         log.setCreatedAt(LocalDateTime.now());
         auditLogMapper.insert(log);
 

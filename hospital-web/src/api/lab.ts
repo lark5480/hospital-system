@@ -1,8 +1,10 @@
 import http from './http'
 import type { LabRequisitionListItem, LabRequisitionDetail, CreateRequisitionRequest, SubmitResultsRequest } from '@/types/lab'
 
-export function listRequisitions(status?: string) {
-  const params = status ? { status } : {}
+export function listRequisitions(status?: string, deptId?: number) {
+  const params: Record<string, any> = {}
+  if (status) params.status = status
+  if (deptId) params.deptId = deptId
   return http.get<LabRequisitionListItem[]>('/lab/requisitions', { params }).then((r) => r.data)
 }
 

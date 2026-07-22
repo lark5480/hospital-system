@@ -38,4 +38,7 @@ public class Order {
 
     /** CREATED / EXECUTED / CANCELLED */
     private String status;
+
+    /** 检查所见/结果(仅 EXAM 类医嘱) */
+    private String finding;
 }

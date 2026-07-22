@@ -1,12 +1,12 @@
 package com.hospital.core;
 
+import static com.tngtech.archunit.core.domain.JavaClass.Predicates.resideInAnyPackage;
+import static com.tngtech.archunit.library.Architectures.layeredArchitecture;
+
 import com.tngtech.archunit.core.importer.ImportOption;
 import com.tngtech.archunit.junit.AnalyzeClasses;
 import com.tngtech.archunit.junit.ArchTest;
 import com.tngtech.archunit.lang.ArchRule;
-
-import static com.tngtech.archunit.core.domain.JavaClass.Predicates.resideInAnyPackage;
-import static com.tngtech.archunit.library.Architectures.layeredArchitecture;
 
 /**
  * 架构红线(ArchUnit):CI 中一旦违反即构建失败。
@@ -41,7 +41,8 @@ class ArchitectureTest {
                             resideInAnyPackage("..platform.aspect..", "..platform.config.."),
                             resideInAnyPackage("..platform.domain..", "..booking.api..",
                                     "..clinical.application..", "..clinical.domain..",
-                                    "..org.domain..", "..patient.domain.."))
+                                    "..org.domain..", "..patient.domain..",
+                                    "..iam.domain..", "..iam.application.."))
                     // FHIR module is a facade layer that converts domain objects to FHIR resources
                     // It needs to access patient/clinical/org domain and application directly for conversion
                     .ignoreDependency(

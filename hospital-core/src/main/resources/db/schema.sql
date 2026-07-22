@@ -7,7 +7,21 @@ CREATE TABLE IF NOT EXISTS platform.audit_log (
     actor       VARCHAR(100),                   -- 操作人
     action      VARCHAR(100),                   -- 操作类型(如:CREATE_VISIT / PAY_CHARGE)
     target      VARCHAR(200),                   -- 操作目标(如:visit_id=42)
+    detail      VARCHAR(500),                   -- 操作明细(如:强制作废2条未执行医嘱)
     created_at  TIMESTAMP NOT NULL DEFAULT now() -- 创建时间
+);
+
+-- 门诊挂号/分诊排队
+CREATE TABLE IF NOT EXISTS clinical.registration (
+    id          BIGSERIAL PRIMARY KEY,
+    patient_id  BIGINT NOT NULL,                -- 患者ID
+    dept_id     BIGINT NOT NULL,                -- 挂号科室
+    doctor_id   BIGINT,                         -- 指定医生(可选)
+    queue_no    INT NOT NULL,                   -- 当日排队号(按科室自增)
+    status      VARCHAR(20) NOT NULL DEFAULT 'WAITING', -- WAITING/CALLED/CANCELLED
+    visit_id    BIGINT,                         -- 叫号后关联的就诊单
+    created_at  TIMESTAMP NOT NULL DEFAULT now(),
+    called_at   TIMESTAMP                       -- 叫号时间
 );
 
 -- 门诊就诊
@@ -35,8 +49,12 @@ CREATE TABLE IF NOT EXISTS clinical.orders (
     unit_price  NUMERIC(10, 2),                 -- 单价(元)
     amount      NUMERIC(10, 2),                 -- 金额 = quantity * unit_price,由应用层计算后落库
     execution_dept_id BIGINT,                   -- 执行科室(跨科室协作,可为空)
-    status      VARCHAR(30)                     -- 状态:CREATED / EXECUTED / CANCELLED
+    status      VARCHAR(30),                    -- 状态:CREATED / EXECUTED / CANCELLED
+    finding     TEXT                            -- 检查所见/结果(仅 EXAM 类医嘱)
 );
+
+-- 幂等:给 orders 表加 finding 列(已存在则跳过)
+ALTER TABLE clinical.orders ADD COLUMN IF NOT EXISTS finding TEXT;
 
 -- 收费记录
 -- 每笔医嘱在执行时生成一条收费,与就诊同事务落库(强一致,无需 Saga)
@@ -46,9 +64,13 @@ CREATE TABLE IF NOT EXISTS clinical.charge (
     order_id    BIGINT,                         -- 关联医嘱ID(汇总收费时可为空)
     item_name   VARCHAR(200),                   -- 收费项目名称
     amount      NUMERIC(10, 2),                 -- 金额
-    pay_status  VARCHAR(30),                    -- 支付状态:UNPAID(未付) / PAID(已付)
-    pay_time    TIMESTAMP                       -- 支付时间
+    pay_status  VARCHAR(30),                    -- 支付状态:UNPAID(未付) / PAID(已付) / REFUNDED(已退费)
+    pay_time    TIMESTAMP,                      -- 支付时间
+    refund_time TIMESTAMP                       -- 退费时间(退费时记录)
 );
+
+-- 幂等:给 charge 表加 refund_time 列(已存在则跳过,兼容旧库)
+ALTER TABLE clinical.charge ADD COLUMN IF NOT EXISTS refund_time TIMESTAMP;
 
 -- ===================== C 端:患者域 =====================
 CREATE SCHEMA IF NOT EXISTS patient;
@@ -182,8 +204,9 @@ COMMENT ON COLUMN clinical.charge.visit_id   IS '关联就诊ID';
 COMMENT ON COLUMN clinical.charge.order_id   IS '关联医嘱ID';
 COMMENT ON COLUMN clinical.charge.item_name  IS '收费项目名称';
 COMMENT ON COLUMN clinical.charge.amount     IS '金额(元)';
-COMMENT ON COLUMN clinical.charge.pay_status IS '支付状态:UNPAID(未付)/PAID(已付)';
+COMMENT ON COLUMN clinical.charge.pay_status IS '支付状态:UNPAID(未付)/PAID(已付)/REFUNDED(已退费)';
 COMMENT ON COLUMN clinical.charge.pay_time   IS '支付时间';
+COMMENT ON COLUMN clinical.charge.refund_time IS '退费时间(退费时记录)';
 
 COMMENT ON COLUMN patient.patient.id         IS '患者主键ID';
 COMMENT ON COLUMN patient.patient.name       IS '姓名';
@@ -264,6 +287,22 @@ CREATE TABLE IF NOT EXISTS clinical.visit_read_model (
     unpaid_count    INT DEFAULT 0
 );
 
+COMMENT ON TABLE clinical.visit_read_model IS '就诊读模型(CQRS-lite)';
+COMMENT ON COLUMN clinical.visit_read_model.visit_id IS '关联写模型visit.id';
+COMMENT ON COLUMN clinical.visit_read_model.patient_name IS '患者姓名(物化字段)';
+COMMENT ON COLUMN clinical.visit_read_model.doctor_name IS '医生姓名(物化字段)';
+COMMENT ON COLUMN clinical.visit_read_model.dept_name IS '科室名称(物化字段)';
+COMMENT ON COLUMN clinical.visit_read_model.order_count IS '医嘱数量';
+COMMENT ON COLUMN clinical.visit_read_model.total_amount IS '总金额';
+COMMENT ON COLUMN clinical.visit_read_model.pay_status IS '收费状态:NO_CHARGES/HAS_UNPAID/ALL_PAID';
+COMMENT ON COLUMN clinical.visit_read_model.unpaid_count IS '未缴费数量';
+
+CREATE INDEX IF NOT EXISTS idx_visit_rm_patient_name ON clinical.visit_read_model(patient_name);
+CREATE INDEX IF NOT EXISTS idx_visit_rm_doctor_name ON clinical.visit_read_model(doctor_name);
+CREATE INDEX IF NOT EXISTS idx_visit_rm_chief_complaint ON clinical.visit_read_model(chief_complaint);
+CREATE INDEX IF NOT EXISTS idx_visit_rm_visit_time ON clinical.visit_read_model(visit_time DESC);
+CREATE INDEX IF NOT EXISTS idx_visit_rm_dept_id ON clinical.visit_read_model(dept_id);
+
 -- ===================== 药事域 =====================
 CREATE SCHEMA IF NOT EXISTS pharmacy;
 
@@ -310,10 +349,17 @@ COMMENT ON COLUMN pharmacy.prescription_item.quantity           IS '数量';
 COMMENT ON COLUMN pharmacy.prescription_item.unit_price         IS '单价';
 COMMENT ON COLUMN pharmacy.prescription_item.status             IS '明细状态:PENDING/DISPENSED/CANCELLED';
 
--- ===================== C端演示患者(与 patient01 用户绑定) =====================
+-- ===================== C端演示患者 =====================
+-- patient01(手机号 13800000000):与 admin01 员工同手机号,迁移后 sys_user 同时挂 ADMIN + PATIENT,演示「同一手机号多角色」。
 INSERT INTO patient.patient (name, gender, birthday, phone, username)
 SELECT '演示患者', 'M', '1990-01-01', '13800000000', 'patient01'
-WHERE NOT EXISTS (SELECT 1 FROM patient.patient WHERE username = 'patient01');
+WHERE NOT EXISTS (SELECT 1 FROM patient.patient WHERE phone = '13800000000' OR username = 'patient01');
+
+-- 纯患者演示账号(手机号 13700000000):独立于员工/管理员,仅 PATIENT 角色。
+-- username = 手机号(与 PatientService.register 约定一致,JWT sub=phone → /me 按 username 反查患者)。
+INSERT INTO patient.patient (name, gender, birthday, phone, username)
+SELECT '演示患者C端', 'M', '1990-01-01', '13700000000', '13700000000'
+WHERE NOT EXISTS (SELECT 1 FROM patient.patient WHERE phone = '13700000000' OR username = '13700000000');
 
 -- ===================== 医技域(检验) =====================
 CREATE SCHEMA IF NOT EXISTS lab;
@@ -382,7 +428,7 @@ CREATE TABLE IF NOT EXISTS org.staff (
     id          BIGSERIAL PRIMARY KEY,          -- 主键ID
     name        VARCHAR(100) NOT NULL,          -- 姓名
     gender      VARCHAR(10),                    -- 性别
-    phone       VARCHAR(20),                    -- 手机号
+    phone       VARCHAR(20) UNIQUE,             -- 手机号(唯一)
     dept_id     BIGINT,                         -- 所属科室ID
     position    VARCHAR(50) NOT NULL,           -- 岗位:DOCTOR / NURSE / PHARMACIST / CASHIER / ADMIN
     username    VARCHAR(100) UNIQUE,            -- 用户名(关联登录账号)
@@ -427,6 +473,30 @@ COMMENT ON COLUMN report.record.status       IS '状态:DRAFT/PUBLISHED';
 COMMENT ON COLUMN report.record.created_at   IS '创建时间';
 COMMENT ON COLUMN report.record.published_at IS '发布时间';
 
+-- ===================== RBAC 角色/权限表(须先于 sys_user_role 建表,满足外键引用) =====================
+-- 角色:对应医护岗位,管理员可为其配置可见菜单(authority 列表)
+CREATE TABLE IF NOT EXISTS platform.role (
+    id          BIGSERIAL PRIMARY KEY,
+    code        VARCHAR(60) NOT NULL UNIQUE,          -- 角色编码:DOCTOR/NURSE/PHARMACIST/CASHIER/ADMIN
+    name        VARCHAR(100) NOT NULL,                -- 角色名称:医师/护士/药师/收费员/管理员
+    description VARCHAR(200),
+    created_at  TIMESTAMP NOT NULL DEFAULT now()
+);
+
+-- 角色↔菜单权限:一个角色可拥有多个 authority(决定侧边栏菜单可见性 + 后端接口鉴权)
+CREATE TABLE IF NOT EXISTS platform.role_authority (
+    id          BIGSERIAL PRIMARY KEY,
+    role_code   VARCHAR(60) NOT NULL REFERENCES platform.role(code) ON DELETE CASCADE,
+    authority   VARCHAR(100) NOT NULL,                -- 如 visit:entry / order:execute / pharmacy:dispense
+    created_at  TIMESTAMP NOT NULL DEFAULT now(),
+    UNIQUE(role_code, authority)
+);
+
+COMMENT ON TABLE platform.role              IS 'RBAC 角色(对应医护岗位)';
+COMMENT ON TABLE platform.role_authority    IS '角色↔菜单权限映射(决定菜单可见性 + 接口鉴权)';
+COMMENT ON COLUMN platform.role.code        IS '角色编码:DOCTOR/NURSE/PHARMACIST/CASHIER/ADMIN';
+COMMENT ON COLUMN platform.role_authority.authority IS '权限串:visit:entry/visit:audit/order:execute/pharmacy:dispense/charge:pay/system:admin/patient:booking';
+
 -- ===================== 统一账号 =====================
 CREATE TABLE IF NOT EXISTS platform.sys_user (
     id          BIGSERIAL PRIMARY KEY,
@@ -464,30 +534,6 @@ CREATE TABLE IF NOT EXISTS platform.menu_authority (
     authority   VARCHAR(60) NOT NULL,
     UNIQUE(menu_id, authority)
 );
-
--- ===================== RBAC:角色/权限(平台基础) =====================
--- 角色:对应医护岗位,管理员可为其配置可见菜单(authority 列表)
-CREATE TABLE IF NOT EXISTS platform.role (
-    id          BIGSERIAL PRIMARY KEY,
-    code        VARCHAR(60) NOT NULL UNIQUE,          -- 角色编码:DOCTOR/NURSE/PHARMACIST/CASHIER/ADMIN
-    name        VARCHAR(100) NOT NULL,                -- 角色名称:医师/护士/药师/收费员/管理员
-    description VARCHAR(200),
-    created_at  TIMESTAMP NOT NULL DEFAULT now()
-);
-
--- 角色↔菜单权限:一个角色可拥有多个 authority(决定侧边栏菜单可见性 + 后端接口鉴权)
-CREATE TABLE IF NOT EXISTS platform.role_authority (
-    id          BIGSERIAL PRIMARY KEY,
-    role_code   VARCHAR(60) NOT NULL REFERENCES platform.role(code) ON DELETE CASCADE,
-    authority   VARCHAR(100) NOT NULL,                -- 如 visit:entry / order:execute / pharmacy:dispense
-    created_at  TIMESTAMP NOT NULL DEFAULT now(),
-    UNIQUE(role_code, authority)
-);
-
-COMMENT ON TABLE platform.role              IS 'RBAC 角色(对应医护岗位)';
-COMMENT ON TABLE platform.role_authority    IS '角色↔菜单权限映射(决定菜单可见性 + 接口鉴权)';
-COMMENT ON COLUMN platform.role.code        IS '角色编码:DOCTOR/NURSE/PHARMACIST/CASHIER/ADMIN';
-COMMENT ON COLUMN platform.role_authority.authority IS '权限串:visit:entry/visit:audit/order:execute/pharmacy:dispense/charge:pay/system:admin/patient:booking';
 
 -- ===================== 幂等种子数据(每次启动重跑,WHERE NOT EXISTS 防重复) =====================
 INSERT INTO booking.exam_package (name, price, description)
@@ -561,41 +607,72 @@ INSERT INTO org.department (name, code, description)
 SELECT '药房', 'PHARMACY', '药房'
 WHERE NOT EXISTS (SELECT 1 FROM org.department WHERE code = 'PHARMACY');
 
+INSERT INTO org.department (name, code, description)
+SELECT '检验科', 'LAB', '检验/医技科室'
+WHERE NOT EXISTS (SELECT 1 FROM org.department WHERE code = 'LAB');
+
 -- 员工(关联到科室ID和登录账号)
 INSERT INTO org.staff (name, gender, phone, dept_id, position, username)
 SELECT '张医生', 'M', '13800000001', d.id, 'DOCTOR', 'doctor01'
 FROM org.department d WHERE d.code = 'INTERNAL'
-  AND NOT EXISTS (SELECT 1 FROM org.staff WHERE username = 'doctor01');
+  AND NOT EXISTS (SELECT 1 FROM org.staff WHERE phone = '13800000001');
 
 INSERT INTO org.staff (name, gender, phone, dept_id, position, username)
 SELECT '李医生', 'F', '13800000002', d.id, 'DOCTOR', 'doctor02'
 FROM org.department d WHERE d.code = 'INTERNAL'
-  AND NOT EXISTS (SELECT 1 FROM org.staff WHERE username = 'doctor02');
+  AND NOT EXISTS (SELECT 1 FROM org.staff WHERE phone = '13800000002');
 
 INSERT INTO org.staff (name, gender, phone, dept_id, position, username)
 SELECT '王护士', 'F', '13800000003', d.id, 'NURSE', 'nurse01'
 FROM org.department d WHERE d.code = 'INTERNAL'
-  AND NOT EXISTS (SELECT 1 FROM org.staff WHERE username = 'nurse01');
+  AND NOT EXISTS (SELECT 1 FROM org.staff WHERE phone = '13800000003');
 
 INSERT INTO org.staff (name, gender, phone, dept_id, position, username)
 SELECT '赵收费', 'M', '13800000004', d.id, 'CASHIER', 'cashier01'
 FROM org.department d WHERE d.code = 'CASHIER'
-  AND NOT EXISTS (SELECT 1 FROM org.staff WHERE username = 'cashier01');
+  AND NOT EXISTS (SELECT 1 FROM org.staff WHERE phone = '13800000004');
 
 INSERT INTO org.staff (name, gender, phone, dept_id, position, username)
 SELECT '孙收费', 'F', '13800000005', d.id, 'CASHIER', 'cashier02'
 FROM org.department d WHERE d.code = 'CASHIER'
-  AND NOT EXISTS (SELECT 1 FROM org.staff WHERE username = 'cashier02');
+  AND NOT EXISTS (SELECT 1 FROM org.staff WHERE phone = '13800000005');
 
 INSERT INTO org.staff (name, gender, phone, dept_id, position, username)
 SELECT '周药师', 'M', '13800000006', d.id, 'PHARMACIST', 'pharmacist01'
 FROM org.department d WHERE d.code = 'PHARMACY'
-  AND NOT EXISTS (SELECT 1 FROM org.staff WHERE username = 'pharmacist01');
+  AND NOT EXISTS (SELECT 1 FROM org.staff WHERE phone = '13800000006');
 
 INSERT INTO org.staff (name, gender, phone, dept_id, position, username)
 SELECT '吴药师', 'F', '13800000007', d.id, 'PHARMACIST', 'pharmacist02'
 FROM org.department d WHERE d.code = 'PHARMACY'
-  AND NOT EXISTS (SELECT 1 FROM org.staff WHERE username = 'pharmacist02');
+  AND NOT EXISTS (SELECT 1 FROM org.staff WHERE phone = '13800000007');
+
+INSERT INTO org.staff (name, gender, phone, dept_id, position, username)
+SELECT '系统管理员', 'M', '13800000000', d.id, 'ADMIN', 'admin01'
+FROM org.department d WHERE d.code = 'INTERNAL'
+  AND NOT EXISTS (SELECT 1 FROM org.staff WHERE phone = '13800000000');
+
+-- 外科医护
+INSERT INTO org.staff (name, gender, phone, dept_id, position, username)
+SELECT '陈医生', 'M', '13800000008', d.id, 'DOCTOR', 'doctor03'
+FROM org.department d WHERE d.code = 'SURGERY'
+  AND NOT EXISTS (SELECT 1 FROM org.staff WHERE phone = '13800000008');
+
+INSERT INTO org.staff (name, gender, phone, dept_id, position, username)
+SELECT '刘护士', 'F', '13800000009', d.id, 'NURSE', 'nurse02'
+FROM org.department d WHERE d.code = 'SURGERY'
+  AND NOT EXISTS (SELECT 1 FROM org.staff WHERE phone = '13800000009');
+
+-- 检验科技师(NURSE 角色持 order:execute,可执行检验/检查并按执行科室路由)
+INSERT INTO org.staff (name, gender, phone, dept_id, position, username)
+SELECT '孙技师', 'M', '13800000010', d.id, 'NURSE', 'tech01'
+FROM org.department d WHERE d.code = 'LAB'
+  AND NOT EXISTS (SELECT 1 FROM org.staff WHERE phone = '13800000010');
+
+INSERT INTO org.staff (name, gender, phone, dept_id, position, username)
+SELECT '钱技师', 'F', '13800000011', d.id, 'NURSE', 'tech02'
+FROM org.department d WHERE d.code = 'LAB'
+  AND NOT EXISTS (SELECT 1 FROM org.staff WHERE phone = '13800000011');
 
 -- ===================== RBAC 角色 + 权限种子(幂等) =====================
 INSERT INTO platform.role (code, name, description)
@@ -617,20 +694,18 @@ INSERT INTO platform.role (code, name, description)
 SELECT 'PATIENT', '患者', '体检预约/查看自身数据'
 WHERE NOT EXISTS (SELECT 1 FROM platform.role WHERE code = 'PATIENT');
 
--- 医师:录入 + 审核 + 执行(检查) + 预约体检
+-- 医师:录入 + 审核 + 执行(检查)
 INSERT INTO platform.role_authority (role_code, authority) SELECT 'DOCTOR', 'visit:entry'
 WHERE NOT EXISTS (SELECT 1 FROM platform.role_authority WHERE role_code='DOCTOR' AND authority='visit:entry');
 INSERT INTO platform.role_authority (role_code, authority) SELECT 'DOCTOR', 'visit:audit'
 WHERE NOT EXISTS (SELECT 1 FROM platform.role_authority WHERE role_code='DOCTOR' AND authority='visit:audit');
 INSERT INTO platform.role_authority (role_code, authority) SELECT 'DOCTOR', 'order:execute'
 WHERE NOT EXISTS (SELECT 1 FROM platform.role_authority WHERE role_code='DOCTOR' AND authority='order:execute');
-INSERT INTO platform.role_authority (role_code, authority) SELECT 'DOCTOR', 'patient:booking'
-WHERE NOT EXISTS (SELECT 1 FROM platform.role_authority WHERE role_code='DOCTOR' AND authority='patient:booking');
--- 护士:执行(检查) + 预约体检
+-- 护士:录入 + 执行(检查)
+INSERT INTO platform.role_authority (role_code, authority) SELECT 'NURSE', 'visit:entry'
+WHERE NOT EXISTS (SELECT 1 FROM platform.role_authority WHERE role_code='NURSE' AND authority='visit:entry');
 INSERT INTO platform.role_authority (role_code, authority) SELECT 'NURSE', 'order:execute'
 WHERE NOT EXISTS (SELECT 1 FROM platform.role_authority WHERE role_code='NURSE' AND authority='order:execute');
-INSERT INTO platform.role_authority (role_code, authority) SELECT 'NURSE', 'patient:booking'
-WHERE NOT EXISTS (SELECT 1 FROM platform.role_authority WHERE role_code='NURSE' AND authority='patient:booking');
 -- 药师:发药
 INSERT INTO platform.role_authority (role_code, authority) SELECT 'PHARMACIST', 'pharmacy:dispense'
 WHERE NOT EXISTS (SELECT 1 FROM platform.role_authority WHERE role_code='PHARMACIST' AND authority='pharmacy:dispense');
@@ -655,6 +730,259 @@ INSERT INTO platform.role_authority (role_code, authority) SELECT 'ADMIN', 'syst
 WHERE NOT EXISTS (SELECT 1 FROM platform.role_authority WHERE role_code='ADMIN' AND authority='system:admin');
 INSERT INTO platform.role_authority (role_code, authority) SELECT 'ADMIN', 'patient:booking'
 WHERE NOT EXISTS (SELECT 1 FROM platform.role_authority WHERE role_code='ADMIN' AND authority='patient:booking');
+
+-- 修正:DOCTOR/NURSE 不应持有 patient:booking(C端患者专属),清理历史脏数据
+DELETE FROM platform.role_authority WHERE role_code = 'DOCTOR' AND authority = 'patient:booking';
+DELETE FROM platform.role_authority WHERE role_code = 'NURSE' AND authority = 'patient:booking';
+
+-- ===================== 导航菜单种子数据(幂等) =====================
+-- 顶级菜单
+INSERT INTO platform.menu (parent_id, key, title, path, icon, sort_order, visible)
+SELECT NULL, 'dashboard', '工作台', '/dashboard', 'HomeFilled', 0, true
+WHERE NOT EXISTS (SELECT 1 FROM platform.menu WHERE key = 'dashboard');
+
+INSERT INTO platform.menu (parent_id, key, title, path, icon, sort_order, visible)
+SELECT NULL, 'visits', '门诊就诊', '/visits', 'FirstAidKit', 1, true
+WHERE NOT EXISTS (SELECT 1 FROM platform.menu WHERE key = 'visits');
+
+INSERT INTO platform.menu (parent_id, key, title, path, icon, sort_order, visible)
+SELECT NULL, 'registration', '门诊挂号', '/registration', 'Ticket', 2, true
+WHERE NOT EXISTS (SELECT 1 FROM platform.menu WHERE key = 'registration');
+
+INSERT INTO platform.menu (parent_id, key, title, path, icon, sort_order, visible)
+SELECT NULL, 'patients', '患者管理', '/patients', 'User', 3, true
+WHERE NOT EXISTS (SELECT 1 FROM platform.menu WHERE key = 'patients');
+
+INSERT INTO platform.menu (parent_id, key, title, path, icon, sort_order, visible)
+SELECT NULL, 'notifications', '消息通知', '/notifications', 'Bell', 4, true
+WHERE NOT EXISTS (SELECT 1 FROM platform.menu WHERE key = 'notifications');
+
+INSERT INTO platform.menu (parent_id, key, title, path, icon, sort_order, visible)
+SELECT NULL, 'pharmacy', '药事管理', NULL, 'Box', 5, true
+WHERE NOT EXISTS (SELECT 1 FROM platform.menu WHERE key = 'pharmacy');
+
+INSERT INTO platform.menu (parent_id, key, title, path, icon, sort_order, visible)
+SELECT NULL, 'lab', '医技管理', NULL, 'DataBoard', 6, true
+WHERE NOT EXISTS (SELECT 1 FROM platform.menu WHERE key = 'lab');
+
+INSERT INTO platform.menu (parent_id, key, title, path, icon, sort_order, visible)
+SELECT NULL, 'reports', '报告管理', '/reports', 'Reading', 7, true
+WHERE NOT EXISTS (SELECT 1 FROM platform.menu WHERE key = 'reports');
+
+INSERT INTO platform.menu (parent_id, key, title, path, icon, sort_order, visible)
+SELECT NULL, 'dispatch', '排队看板', '/dispatch', 'Monitor', 8, true
+WHERE NOT EXISTS (SELECT 1 FROM platform.menu WHERE key = 'dispatch');
+
+INSERT INTO platform.menu (parent_id, key, title, path, icon, sort_order, visible)
+SELECT NULL, 'cashier', '收费管理', '/cashier', 'Coin', 9, true
+WHERE NOT EXISTS (SELECT 1 FROM platform.menu WHERE key = 'cashier');
+
+INSERT INTO platform.menu (parent_id, key, title, path, icon, sort_order, visible)
+SELECT NULL, 'patient-appointment', '患者预约', '/patient/booking', 'Tickets', 10, true
+WHERE NOT EXISTS (SELECT 1 FROM platform.menu WHERE key = 'patient-appointment');
+
+INSERT INTO platform.menu (parent_id, key, title, path, icon, sort_order, visible)
+SELECT NULL, 'org', '组织架构', NULL, 'OfficeBuilding', 11, true
+WHERE NOT EXISTS (SELECT 1 FROM platform.menu WHERE key = 'org');
+
+INSERT INTO platform.menu (parent_id, key, title, path, icon, sort_order, visible)
+SELECT NULL, 'files', '文件管理', '/files', 'Folder', 12, true
+WHERE NOT EXISTS (SELECT 1 FROM platform.menu WHERE key = 'files');
+
+INSERT INTO platform.menu (parent_id, key, title, path, icon, sort_order, visible)
+SELECT NULL, 'patient-service', '患者服务', NULL, 'User', 13, true
+WHERE NOT EXISTS (SELECT 1 FROM platform.menu WHERE key = 'patient-service');
+
+-- 药事管理子菜单
+INSERT INTO platform.menu (parent_id, key, title, path, icon, sort_order, visible)
+SELECT p.id, 'pharmacy-prescriptions', '处方发药', '/pharmacy/prescriptions', 'List', 0, true
+FROM platform.menu p WHERE p.key = 'pharmacy'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu WHERE key = 'pharmacy-prescriptions');
+
+-- 医技管理子菜单
+INSERT INTO platform.menu (parent_id, key, title, path, icon, sort_order, visible)
+SELECT p.id, 'lab-requisitions', '检验申请', '/lab/requisitions', 'List', 0, true
+FROM platform.menu p WHERE p.key = 'lab'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu WHERE key = 'lab-requisitions');
+
+INSERT INTO platform.menu (parent_id, key, title, path, icon, sort_order, visible)
+SELECT p.id, 'exams', '检查执行', '/exams', 'VideoCamera', 1, true
+FROM platform.menu p WHERE p.key = 'lab'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu WHERE key = 'exams');
+
+-- 组织架构子菜单
+INSERT INTO platform.menu (parent_id, key, title, path, icon, sort_order, visible)
+SELECT p.id, 'org-departments', '科室管理', '/org/departments', 'List', 0, true
+FROM platform.menu p WHERE p.key = 'org'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu WHERE key = 'org-departments');
+
+INSERT INTO platform.menu (parent_id, key, title, path, icon, sort_order, visible)
+SELECT p.id, 'org-staff', '员工管理', '/org/staff', 'UserFilled', 1, true
+FROM platform.menu p WHERE p.key = 'org'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu WHERE key = 'org-staff');
+
+INSERT INTO platform.menu (parent_id, key, title, path, icon, sort_order, visible)
+SELECT p.id, 'org-roles', '角色权限', '/org/roles', 'Lock', 2, true
+FROM platform.menu p WHERE p.key = 'org'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu WHERE key = 'org-roles');
+
+INSERT INTO platform.menu (parent_id, key, title, path, icon, sort_order, visible)
+SELECT p.id, 'menu-manage', '菜单管理', '/menu-manage', 'Menu', 3, true
+FROM platform.menu p WHERE p.key = 'org'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu WHERE key = 'menu-manage');
+
+INSERT INTO platform.menu (parent_id, key, title, path, icon, sort_order, visible)
+SELECT p.id, 'audit-logs', '操作审计', '/audit-logs', 'Document', 4, true
+FROM platform.menu p WHERE p.key = 'org'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu WHERE key = 'audit-logs');
+
+-- 患者服务子菜单
+INSERT INTO platform.menu (parent_id, key, title, path, icon, sort_order, visible)
+SELECT p.id, 'patient-registration', '门诊挂号', '/patient/registration', 'Ticket', 0, true
+FROM platform.menu p WHERE p.key = 'patient-service'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu WHERE key = 'patient-registration');
+
+INSERT INTO platform.menu (parent_id, key, title, path, icon, sort_order, visible)
+SELECT p.id, 'patient-booking', '套餐预约', '/patient/booking', 'Tickets', 1, true
+FROM platform.menu p WHERE p.key = 'patient-service'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu WHERE key = 'patient-booking');
+
+INSERT INTO platform.menu (parent_id, key, title, path, icon, sort_order, visible)
+SELECT p.id, 'patient-appointments', '我的预约', '/patient/appointments', 'Calendar', 2, true
+FROM platform.menu p WHERE p.key = 'patient-service'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu WHERE key = 'patient-appointments');
+
+INSERT INTO platform.menu (parent_id, key, title, path, icon, sort_order, visible)
+SELECT p.id, 'patient-myqueue', '我的排队', '/patient/my-queue', 'List', 3, true
+FROM platform.menu p WHERE p.key = 'patient-service'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu WHERE key = 'patient-myqueue');
+
+INSERT INTO platform.menu (parent_id, key, title, path, icon, sort_order, visible)
+SELECT p.id, 'patient-my-reports', '我的报告', '/patient/my-reports', 'Reading', 4, true
+FROM platform.menu p WHERE p.key = 'patient-service'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu WHERE key = 'patient-my-reports');
+
+-- 菜单权限关联
+INSERT INTO platform.menu_authority (menu_id, authority)
+SELECT id, 'visit:entry' FROM platform.menu WHERE key = 'visits'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu_authority ma JOIN platform.menu m ON m.id = ma.menu_id WHERE m.key = 'visits' AND ma.authority = 'visit:entry');
+
+INSERT INTO platform.menu_authority (menu_id, authority)
+SELECT id, 'visit:entry' FROM platform.menu WHERE key = 'registration'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu_authority ma JOIN platform.menu m ON m.id = ma.menu_id WHERE m.key = 'registration' AND ma.authority = 'visit:entry');
+
+INSERT INTO platform.menu_authority (menu_id, authority)
+SELECT id, 'visit:entry' FROM platform.menu WHERE key = 'patients'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu_authority ma JOIN platform.menu m ON m.id = ma.menu_id WHERE m.key = 'patients' AND ma.authority = 'visit:entry');
+
+INSERT INTO platform.menu_authority (menu_id, authority)
+SELECT id, 'visit:entry' FROM platform.menu WHERE key = 'notifications'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu_authority ma JOIN platform.menu m ON m.id = ma.menu_id WHERE m.key = 'notifications' AND ma.authority = 'visit:entry');
+
+INSERT INTO platform.menu_authority (menu_id, authority)
+SELECT id, 'pharmacy:dispense' FROM platform.menu WHERE key = 'pharmacy'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu_authority ma JOIN platform.menu m ON m.id = ma.menu_id WHERE m.key = 'pharmacy' AND ma.authority = 'pharmacy:dispense');
+
+INSERT INTO platform.menu_authority (menu_id, authority)
+SELECT id, 'pharmacy:dispense' FROM platform.menu WHERE key = 'pharmacy-prescriptions'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu_authority ma JOIN platform.menu m ON m.id = ma.menu_id WHERE m.key = 'pharmacy-prescriptions' AND ma.authority = 'pharmacy:dispense');
+
+INSERT INTO platform.menu_authority (menu_id, authority)
+SELECT id, 'order:execute' FROM platform.menu WHERE key = 'lab'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu_authority ma JOIN platform.menu m ON m.id = ma.menu_id WHERE m.key = 'lab' AND ma.authority = 'order:execute');
+
+INSERT INTO platform.menu_authority (menu_id, authority)
+SELECT id, 'order:execute' FROM platform.menu WHERE key = 'lab-requisitions'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu_authority ma JOIN platform.menu m ON m.id = ma.menu_id WHERE m.key = 'lab-requisitions' AND ma.authority = 'order:execute');
+
+INSERT INTO platform.menu_authority (menu_id, authority)
+SELECT id, 'order:execute' FROM platform.menu WHERE key = 'exams'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu_authority ma JOIN platform.menu m ON m.id = ma.menu_id WHERE m.key = 'exams' AND ma.authority = 'order:execute');
+
+INSERT INTO platform.menu_authority (menu_id, authority)
+SELECT id, 'visit:entry' FROM platform.menu WHERE key = 'reports'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu_authority ma JOIN platform.menu m ON m.id = ma.menu_id WHERE m.key = 'reports' AND ma.authority = 'visit:entry');
+
+INSERT INTO platform.menu_authority (menu_id, authority)
+SELECT id, 'visit:entry' FROM platform.menu WHERE key = 'dispatch'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu_authority ma JOIN platform.menu m ON m.id = ma.menu_id WHERE m.key = 'dispatch' AND ma.authority = 'visit:entry');
+
+INSERT INTO platform.menu_authority (menu_id, authority)
+SELECT id, 'charge:pay' FROM platform.menu WHERE key = 'cashier'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu_authority ma JOIN platform.menu m ON m.id = ma.menu_id WHERE m.key = 'cashier' AND ma.authority = 'charge:pay');
+
+INSERT INTO platform.menu_authority (menu_id, authority)
+SELECT id, 'visit:entry' FROM platform.menu WHERE key = 'patient-appointment'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu_authority ma JOIN platform.menu m ON m.id = ma.menu_id WHERE m.key = 'patient-appointment' AND ma.authority = 'visit:entry');
+
+INSERT INTO platform.menu_authority (menu_id, authority)
+SELECT id, 'system:admin' FROM platform.menu WHERE key = 'org'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu_authority ma JOIN platform.menu m ON m.id = ma.menu_id WHERE m.key = 'org' AND ma.authority = 'system:admin');
+
+INSERT INTO platform.menu_authority (menu_id, authority)
+SELECT id, 'system:admin' FROM platform.menu WHERE key = 'org-departments'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu_authority ma JOIN platform.menu m ON m.id = ma.menu_id WHERE m.key = 'org-departments' AND ma.authority = 'system:admin');
+
+INSERT INTO platform.menu_authority (menu_id, authority)
+SELECT id, 'system:admin' FROM platform.menu WHERE key = 'org-staff'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu_authority ma JOIN platform.menu m ON m.id = ma.menu_id WHERE m.key = 'org-staff' AND ma.authority = 'system:admin');
+
+INSERT INTO platform.menu_authority (menu_id, authority)
+SELECT id, 'system:admin' FROM platform.menu WHERE key = 'org-roles'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu_authority ma JOIN platform.menu m ON m.id = ma.menu_id WHERE m.key = 'org-roles' AND ma.authority = 'system:admin');
+
+INSERT INTO platform.menu_authority (menu_id, authority)
+SELECT id, 'system:admin' FROM platform.menu WHERE key = 'menu-manage'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu_authority ma JOIN platform.menu m ON m.id = ma.menu_id WHERE m.key = 'menu-manage' AND ma.authority = 'system:admin');
+
+INSERT INTO platform.menu_authority (menu_id, authority)
+SELECT id, 'system:admin' FROM platform.menu WHERE key = 'audit-logs'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu_authority ma JOIN platform.menu m ON m.id = ma.menu_id WHERE m.key = 'audit-logs' AND ma.authority = 'system:admin');
+
+INSERT INTO platform.menu_authority (menu_id, authority)
+SELECT id, 'system:admin' FROM platform.menu WHERE key = 'files'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu_authority ma JOIN platform.menu m ON m.id = ma.menu_id WHERE m.key = 'files' AND ma.authority = 'system:admin');
+
+INSERT INTO platform.menu_authority (menu_id, authority)
+SELECT id, 'patient:booking' FROM platform.menu WHERE key = 'patient-service'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu_authority ma JOIN platform.menu m ON m.id = ma.menu_id WHERE m.key = 'patient-service' AND ma.authority = 'patient:booking');
+
+INSERT INTO platform.menu_authority (menu_id, authority)
+SELECT id, 'patient:booking' FROM platform.menu WHERE key = 'patient-registration'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu_authority ma JOIN platform.menu m ON m.id = ma.menu_id WHERE m.key = 'patient-registration' AND ma.authority = 'patient:booking');
+
+INSERT INTO platform.menu_authority (menu_id, authority)
+SELECT id, 'patient:booking' FROM platform.menu WHERE key = 'patient-booking'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu_authority ma JOIN platform.menu m ON m.id = ma.menu_id WHERE m.key = 'patient-booking' AND ma.authority = 'patient:booking');
+
+INSERT INTO platform.menu_authority (menu_id, authority)
+SELECT id, 'patient:booking' FROM platform.menu WHERE key = 'patient-appointments'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu_authority ma JOIN platform.menu m ON m.id = ma.menu_id WHERE m.key = 'patient-appointments' AND ma.authority = 'patient:booking');
+
+INSERT INTO platform.menu_authority (menu_id, authority)
+SELECT id, 'patient:booking' FROM platform.menu WHERE key = 'patient-myqueue'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu_authority ma JOIN platform.menu m ON m.id = ma.menu_id WHERE m.key = 'patient-myqueue' AND ma.authority = 'patient:booking');
+
+INSERT INTO platform.menu_authority (menu_id, authority)
+SELECT id, 'patient:booking' FROM platform.menu WHERE key = 'patient-my-reports'
+  AND NOT EXISTS (SELECT 1 FROM platform.menu_authority ma JOIN platform.menu m ON m.id = ma.menu_id WHERE m.key = 'patient-my-reports' AND ma.authority = 'patient:booking');
+
+-- 修正历史数据中可能为 NULL 的图标
+UPDATE platform.menu SET icon = 'HomeFilled' WHERE key = 'dashboard' AND icon IS NULL;
+UPDATE platform.menu SET icon = 'FirstAidKit' WHERE key = 'visits' AND icon IS NULL;
+UPDATE platform.menu SET icon = 'Ticket' WHERE key = 'registration' AND icon IS NULL;
+UPDATE platform.menu SET icon = 'User' WHERE key = 'patients' AND icon IS NULL;
+UPDATE platform.menu SET icon = 'Bell' WHERE key = 'notifications' AND icon IS NULL;
+UPDATE platform.menu SET icon = 'Box' WHERE key = 'pharmacy' AND icon IS NULL;
+UPDATE platform.menu SET icon = 'DataBoard' WHERE key = 'lab' AND icon IS NULL;
+UPDATE platform.menu SET icon = 'Reading' WHERE key = 'reports' AND icon IS NULL;
+UPDATE platform.menu SET icon = 'Monitor' WHERE key = 'dispatch' AND icon IS NULL;
+UPDATE platform.menu SET icon = 'Coin' WHERE key = 'cashier' AND icon IS NULL;
+UPDATE platform.menu SET icon = 'Tickets' WHERE key = 'patient-appointment' AND icon IS NULL;
+UPDATE platform.menu SET icon = 'OfficeBuilding' WHERE key = 'org' AND icon IS NULL;
+UPDATE platform.menu SET icon = 'Folder' WHERE key = 'files' AND icon IS NULL;
+UPDATE platform.menu SET icon = 'User' WHERE key = 'patient-service' AND icon IS NULL;
+UPDATE platform.menu SET icon = 'Ticket' WHERE key = 'patient-registration' AND icon IS NULL;
 
 -- ===================== C端种子报告数据 =====================
 INSERT INTO report.record (visit_id, patient_id, type, title, content, doctor_id, status, created_at, published_at)

@@ -4,9 +4,11 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import * as labApi from '@/api/lab'
+import { useAuthStore } from '@/stores/auth'
 import type { LabRequisitionListItem } from '@/types/lab'
 
 const router = useRouter()
+const authStore = useAuthStore()
 const list = ref<LabRequisitionListItem[]>([])
 const loading = ref(false)
 const filterStatus = ref('')
@@ -21,7 +23,7 @@ const statusText: Record<string, string> = {
 async function fetchList() {
   loading.value = true
   try {
-    list.value = await labApi.listRequisitions(filterStatus.value || undefined)
+    list.value = await labApi.listRequisitions(filterStatus.value || undefined, authStore.departmentId || undefined)
   } catch { ElMessage.error('加载失败') }
   finally { loading.value = false }
 }

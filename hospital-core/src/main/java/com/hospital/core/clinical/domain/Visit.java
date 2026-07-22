@@ -23,9 +23,15 @@ public class Visit {
     private Long deptId;
     private String chiefComplaint;
 
-    /** CREATED(草稿) / CONFIRMED(已确单) / IN_PROGRESS / FINISHED */
+    /** 就诊状态,合法转换见 {@link VisitStatus};变更须走 {@link #transitTo(VisitStatus)}。 */
     private String status;
 
     private LocalDateTime visitTime;
     private LocalDateTime createdAt;
+
+    /** 状态收口:校验合法转换后更新 status,非法转换抛 IllegalStateException。 */
+    public void transitTo(VisitStatus target) {
+        VisitStatus.of(this.status).assertTransitionTo(target);
+        this.status = target.name();
+    }
 }

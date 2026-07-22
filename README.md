@@ -34,25 +34,32 @@ browser ──► hospital-web :5173
    (模块化单体核心)   (RabbitMQ 消费)       (MinIO 封装)
 ```
 
-- **hospital-core**:模块化单体,内部 9 个 domain 模块(`platform` 共享内核 + `clinical` / `pharmacy` / `lab` / `report` / `booking` / `dispatch` / `patient` / `iam`),各自独立 schema。
-- **gateway**:路由 `/api/core/**`(转发 hospital-core 内全部业务域:clinical/pharmacy/lab/report/booking/dispatch/patient/iam/org) `/api/notify/**`(notification) `/api/files/**`(file-service)。
-- **notification**:消费 `VisitCreatedEvent`,写入 notification store,供前端轮询。
+- **hospital-core**:模块化单体,内部 10 个 domain 模块(`platform` 共享内核 + `clinical` / `pharmacy` / `lab` / `report` / `booking` / `dispatch` / `patient` / `iam` / `org` / `fhir`),各自独立 schema。
+- **gateway**:路由 `/api/core/**`(转发 hospital-core 内全部业务域)、`/api/notify/**`(notification)、`/api/files/**`(file-service)、`/fhir/**`(FHIR R4)。
+- **notification**:消费 `VisitCreatedEvent` / `OrderCreatedEvent` / `VisitStatusEvent`,写入 notification store,供前端轮询。
 - **file**:MinIO 封装,上传下载 + 分片。
 
-## 前端路由(18 条业务路由)
+## 前端路由(29 条)
 
 | 路由 | 视图 | 后端模块 |
 |---|---|---|
-| `/dashboard` | DashboardView | — | 
+| `/dashboard` | DashboardView | — |
 | `/visits` `/visits/:id` | VisitListView / VisitDetailView | clinical |
+| `/registration` `/registration/screen` | RegistrationView / OutpatientScreenView | clinical |
 | `/notifications` | NotificationView | notification |
 | `/files` | FileView | file |
 | `/patient/booking` `/patient/appointments` `/patient/my-queue` `/patient/my-reports` | 对应 4 个 View | booking / booking / dispatch / report |
 | `/patients` | PatientsView | patient |
-| `/dispatch` | DispatchView | dispatch |
+| `/dispatch` `/dispatch/screen` | DispatchView / ScreenView | dispatch |
 | `/pharmacy/prescriptions` `/pharmacy/prescriptions/:id` | 对应 2 个 View | pharmacy |
 | `/lab/requisitions` `/lab/requisitions/:id` | 对应 2 个 View | lab |
+| `/exams` | ExamTasksView | booking |
 | `/reports` | ReportsView | report |
+| `/org/departments` `/org/staff` `/org/roles` | DepartmentsView / StaffView / RoleAuthView | org / org / iam |
+| `/menu-manage` | MenuManageView | iam |
+| `/cashier` | CashierView | clinical |
+| `/audit-logs` | AuditLogView | platform |
+| `/login` `/404` | LoginView / NotFoundView | — |
 
 ## 认证与 RBAC(自管 JWT)
 
@@ -61,13 +68,13 @@ browser ──► hospital-web :5173
                                                                       │ Authorization: Bearer <JWT>
                                                                       ▼
                                                                API Gateway :8104
-                                                         (JwtAuthFilter 解析 + 注入 SecurityContext)
+                                                         (透传至 hospital-core 校验)
 ```
 
 - **自管 JWT**:后端 `JwtTokenService` 签发/解析(HS256),无外部 IdP 依赖,本地零配置可跑。
 - **登录**:`POST /api/auth/login?phone=xxx&password=xxx` → 返回 token + roles + authorities(角色权限查库)。
 - **RBAC**:七权(`visit:entry`/`visit:audit`/`order:execute`/`pharmacy:dispense`/`charge:pay`/`system:admin`/`patient:booking`),角色↔权限映射入库(`platform.role` + `platform.role_authority`),管理员后台可配。
-- **菜单过滤**:后端 `MenuService` 按当前用户 authority 裁剪菜单树,前端动态渲染侧边栏。
+- **菜单过滤**:后端 `MenuService` 从 `platform.menu` + `platform.menu_authority` 表加载菜单树,按当前用户 authorities 动态裁剪。
 - **未来接外部 IdP**:只需替换 login 环节(校验外部 token → 换签自有 JWT),过滤器与 SecurityConfig 不动。
 
 ## 前端工程结构
@@ -75,10 +82,10 @@ browser ──► hospital-web :5173
 ```
 hospital-web/src
 ├── layouts/MainLayout.vue     # 侧边栏菜单 + 嵌套布局
-├── router/index.ts            # 路由定义 + 全局守卫
-├── stores/                    # Pinia 状态管理(auth/visit/menu/patient/dispatch/notification)
+├── router/index.ts            # 路由定义(29 条)+ 全局守卫
+├── stores/                    # Pinia 状态管理(auth/visit/menu/patient/dispatch/notification/tabs)
 ├── api/                      # Axios 实例 + 按域划分的 API 模块
-├── views/                    # 17 个 Vue 组件(含 404)
+├── views/                    # 29 个 Vue 组件(含 Login/NotFound)
 └── types/                    # TypeScript 类型定义
 ```
 
@@ -134,7 +141,7 @@ npm run dev
 - **多角色**:`platform.sys_user_role`(user_id × role_code 多对多),一个账号可同时绑定医生+患者+管理员。
 - **权限并集**:登录时取所有角色的 authority 并集,菜单 = 并集可见。
 - **后端鉴权**:`@PreAuthorize("hasAuthority('...')")` 标注在 controller 方法,由 `SecurityConfig` + `JwtAuthFilter` 统一收口。
-- **前端菜单**:`MenuConfig` 静态注册菜单树并标注每个菜单项所需 authority,`MenuService` 按当前用户 authorities 动态过滤。
+- **前端菜单**:菜单结构存储在 `platform.menu` + `platform.menu_authority` 表,`MenuService` 按当前用户 authorities 动态过滤。
 - **用户身份**:`CurrentUserResolver` 统一解析(从 SecurityContext 或 `X-Username` 开发 fallback)。
 
 ## 模块规则(ArchUnit 红线)
@@ -166,9 +173,17 @@ hospital-system/
 前端"就诊详情"页可:
 - **追加医嘱**:选药品 / 检查 / 检验 → 数量 / 单价 → 提交。后端 `addOrder` 在同一 DB 事务内写入 `clinical.orders` 并生成 `clinical.charge`(UNPAID)。
 - **收费**:点击"收费"按钮,后端 `pay` 在同一事务内把所有 UNPAID 收费置为 PAID。
+- **修改/取消医嘱**:未执行(CREATED)的医嘱可修改(名称/数量/单价)或取消,已执行或已收费的不动。
+- **退费**:已收费的 charge 可退费(REFUNDED)。
 - 金额由后端 `unitPrice * quantity` 汇总,前端只作展示。
 
 > 关键:就诊 / 医嘱 / 收费 *同一事务* 强一致落库(模块化单体的优势,无需 Saga / 最终一致性),这是本作品在「单体 vs 微服务」权衡中的核心判断点。
+
+#### 门诊挂号与分诊排队
+- **挂号**:患者选科室/医生,`POST /api/core/registrations` 创建 `clinical.registration`(WAITING)。
+- **叫号**:医生 `POST /api/core/registrations/call-next`,把挂号置为 CALLED 并关联就诊单。
+- **取消**:`POST /api/core/registrations/{id}/cancel` 取消挂号。
+- **分诊屏**:`OutpatientScreenView` 展示当前科室排队状态。
 
 #### 药事(处方→发药)
 - **创建处方**:从就诊的药品医嘱(type=MEDICATION)自动聚合,生成处方 + 明细行。
@@ -192,28 +207,28 @@ hospital-system/
 - **发布**:`POST /{id}/publish` 把报告置为 PUBLISHED 并入审计日志。
 - 报告类型:LAB(检验综合)/EXAM(体检综合)/CLINIC(门诊病历)。
 
+#### 结构化电子病历
+- **目的**:将病历从纯文本升级为结构化存储,支持 JSONB 查询。
+- **实现**:`clinical.medical_record` 表,JSONB 存储体格检查、诊断等半结构化数据。
+- **关键类**:`MedicalRecord`, `MedicalRecordService`, `JsonbTypeHandler`。
+- **API 端点**:`POST /api/core/medical-records`, `GET /api/core/medical-records?visitId=X`, `GET /api/core/medical-records/patient/{patientId}`。
+
 #### 审计日志(AOP 切面)
 关键写操作自动落 `audit_log` 表:
-- `CREATE_VISIT` / `PAY_CHARGE` / `BOOK_APPOINTMENT` / `CREATE_PRESCRIPTION` / `DISPENSE` / `CREATE_REPORT` / `PUBLISH_REPORT`
+- `CREATE_VISIT` / `PAY_CHARGE` / `BOOK_APPOINTMENT` / `CREATE_PRESCRIPTION` / `DISPENSE` / `CREATE_REPORT` / `PUBLISH_REPORT` / `REGISTER` / `CALL_NEXT` / `EDIT_ORDER` / `CANCEL_ORDER` / `REFUND_ORDER` / `CONFIRM_VISIT` / `FINISH_VISIT`
 - `@AuditLog` 注解 + `AuditLogAspect` 切面自动记录。
 
-#### CQRS-lite 读模型(P2)
+#### CQRS-lite 读模型
 - **问题**:原 `listPage()` 加载全表到内存,存在 N+1 查询和 O(N²) 复杂度。
 - **方案**:新建 `clinical.visit_read_model` 表,写操作同一事务内同步更新,读查询走读模型单表。
 - **优化**:分页查询从 O(N²) 内存分页优化为 O(1) 数据库分页。
 - **关键类**:`VisitReadModel`, `VisitReadModelService`, `VisitReadModelMapper`。
 
-#### FHIR Facade(P2)
+#### FHIR Facade
 - **目的**:实现 FHIR R4 标准接口,支持医疗数据互联互通(互联互通测评方向)。
 - **实现**:只读 API,手写 JSON 转换,不引入 HAPI FHIR 等重型库。
 - **支持资源**:Patient, Encounter, Condition, CapabilityStatement。
 - **API 端点**:`GET /fhir/Patient/{id}`, `GET /fhir/Encounter/{id}`, `GET /fhir/Condition/{id}`, `GET /fhir/metadata`。
-
-#### 结构化电子病历(P2)
-- **目的**:将病历从纯文本升级为结构化存储,支持 JSONB 查询。
-- **实现**:新建 `clinical.medical_record` 表,JSONB 存储体格检查、诊断等半结构化数据。
-- **关键类**:`MedicalRecord`, `MedicalRecordService`, `JsonbTypeHandler`。
-- **API 端点**:`POST /api/core/medical-records`, `GET /api/core/medical-records?visitId=X`, `PUT /api/core/medical-records/{visitId}/finalize`。
 
 ## 学习路线图建议
 1. 先跑通后端,理解模块化单体 + 事件驱动 + Gateway + 前端衔接。

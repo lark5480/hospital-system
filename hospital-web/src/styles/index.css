@@ -1,0 +1,10 @@
+/**
+ * 样式入口 —— 在 main.ts 中于 element-plus/dist/index.css 之后引入。
+ * 引入顺序即层叠顺序：令牌 → Element 主题映射 → 全局基座。
+ *
+ * 字体：不依赖外部 CDN（项目定位为本地运行、不接外网），
+ *      令牌中的字体栈会自动降级到系统字体（Inter→system-ui 等）。
+ */
+@import './tokens.css';
+@import './element.css';
+@import './base.css';

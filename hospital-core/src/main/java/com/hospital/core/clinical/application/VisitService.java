@@ -15,9 +15,13 @@ import org.springframework.transaction.annotation.Transactional;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.hospital.core.clinical.domain.Charge;
 import com.hospital.core.clinical.domain.Order;
+import com.hospital.core.clinical.domain.OrderCreatedEvent;
+import com.hospital.core.clinical.domain.OrderUpdatedEvent;
 import com.hospital.core.clinical.domain.Visit;
 import com.hospital.core.clinical.domain.VisitCreatedEvent;
 import com.hospital.core.clinical.domain.VisitReadModel;
+import com.hospital.core.clinical.domain.VisitStatus;
+import com.hospital.core.clinical.domain.VisitStatusEvent;
 import com.hospital.core.clinical.infrastructure.ChargeMapper;
 import com.hospital.core.clinical.infrastructure.OrderMapper;
 import com.hospital.core.clinical.infrastructure.VisitMapper;
@@ -25,6 +29,7 @@ import com.hospital.core.clinical.infrastructure.VisitReadModelMapper;
 import com.hospital.core.org.application.DepartmentService;
 import com.hospital.core.org.application.StaffService;
 import com.hospital.core.patient.application.PatientService;
+import com.hospital.core.platform.security.CurrentUserResolver;
 
 import lombok.RequiredArgsConstructor;
 
@@ -50,6 +55,7 @@ public class VisitService {
         visit.setVisitTime(LocalDateTime.now());
         visit.setCreatedAt(LocalDateTime.now());
         visitMapper.insert(visit);
+        readModelService.refresh(visit.getId());
         eventPublisher.publishEvent(
                 new VisitCreatedEvent(visit.getId(), visit.getPatientId(), visit.getDoctorId(), visit.getCreatedAt()));
         return visit;
@@ -104,22 +110,26 @@ public class VisitService {
         if (visit == null) {
             throw new IllegalArgumentException("就诊不存在: " + visitId);
         }
-        if ("CONFIRMED".equals(visit.getStatus())) {
+        if (VisitStatus.of(visit.getStatus()) == VisitStatus.CONFIRMED) {
             return getDetail(visitId);
         }
-        if (!"CREATED".equals(visit.getStatus())) {
-            throw new IllegalStateException("仅草稿状态就诊单可确单(当前状态: " + visit.getStatus() + ")");
+        // 确单时若尚未指定医生,默认归属当前操作医生(确单者即接诊者)
+        if (visit.getDoctorId() == null) {
+            visit.setDoctorId(resolveCurrentDoctorId());
         }
-        visit.setStatus("CONFIRMED");
+        visit.transitTo(VisitStatus.CONFIRMED);
         visitMapper.updateById(visit);
         readModelService.refresh(visitId);
         return getDetail(visitId);
     }
 
-    /** 就诊内追加一条医嘱;同一事务生成对应收费。已确单则拒绝。 */
+    /** 就诊内追加一条医嘱;同一事务生成对应收费。FINISHED 状态拒绝追加;其余状态均可(含回诊追加)。 */
     @Transactional
     public VisitDetail addOrder(Long visitId, Order order) {
-        assertNotConfirmed(visitId);
+        Visit orderVisit = visitMapper.selectById(visitId);
+        if (orderVisit != null && VisitStatus.of(orderVisit.getStatus()).isTerminal()) {
+            throw new IllegalStateException("就诊已结束,不可追加医嘱");
+        }
         order.setVisitId(visitId);
         order.setStatus("CREATED");
         order.setAmount(order.getUnitPrice().multiply(BigDecimal.valueOf(order.getQuantity())));
@@ -133,6 +143,35 @@ public class VisitService {
         charge.setPayStatus("UNPAID");
         chargeMapper.insert(charge);
 
+        // 发送医嘱创建通知
+        Visit visit = visitMapper.selectById(visitId);
+        if (visit != null) {
+            var patient = patientService.get(visit.getPatientId());
+            String patientName = patient != null ? patient.getName() : "患者";
+            
+            // 根据医嘱类型确定通知对象
+            String targetRole;
+            String message;
+            if ("EXAM".equals(order.getType())) {
+                // 检查医嘱 → 通知目标科室医生
+                targetRole = "DOCTOR";
+                message = "新检查医嘱: " + order.getItemName() + "，请安排检查";
+            } else if ("LAB".equals(order.getType())) {
+                // 检验医嘱 → 通知护士执行
+                targetRole = "NURSE";
+                message = "新检验医嘱: " + order.getItemName() + "，请采集标本";
+            } else {
+                // 药品医嘱 → 不需要特殊通知
+                targetRole = "DOCTOR";
+                message = "新药品医嘱: " + order.getItemName();
+            }
+            
+            eventPublisher.publishEvent(new OrderCreatedEvent(
+                    visitId, visit.getPatientId(), patientName,
+                    order.getType(), order.getItemName(), targetRole,
+                    order.getExecutionDeptId()));
+        }
+
         readModelService.refresh(visitId);
         return getDetail(visitId);
     }
@@ -143,7 +182,6 @@ public class VisitService {
      */
     @Transactional
     public VisitDetail editOrder(Long visitId, Long orderId, Order updates) {
-        assertNotConfirmed(visitId);
         Order existing = orderMapper.selectById(orderId);
         if (existing == null || !visitId.equals(existing.getVisitId())) {
             throw new IllegalArgumentException("医嘱不存在或不属于该就诊: " + orderId);
@@ -170,6 +208,10 @@ public class VisitService {
                     }
                 });
 
+        // 通知下游模块同步各自快照明细(处方/检验申请),避免修改后仍显示旧名称
+        eventPublisher.publishEvent(new OrderUpdatedEvent(
+                orderId, existing.getItemName(), existing.getQuantity(), existing.getUnitPrice()));
+
         readModelService.refresh(visitId);
         return getDetail(visitId);
     }
@@ -180,7 +222,6 @@ public class VisitService {
      */
     @Transactional
     public VisitDetail cancelOrder(Long visitId, Long orderId) {
-        assertNotConfirmed(visitId);
         Order existing = orderMapper.selectById(orderId);
         if (existing == null || !visitId.equals(existing.getVisitId())) {
             throw new IllegalArgumentException("医嘱不存在或不属于该就诊: " + orderId);
@@ -197,7 +238,39 @@ public class VisitService {
                 .filter(c -> "UNPAID".equals(c.getPayStatus()))
                 .forEach(c -> chargeMapper.deleteById(c.getId()));
 
-        tryAutoFinish(visitId);  // 所有医嘱执行/取消完 → 自动完成就诊单
+        readModelService.refresh(visitId);
+        return getDetail(visitId);
+    }
+
+    /**
+     * 退费:作废一条未执行(CREATED)的医嘱,并处理其对应收费。
+     * 未收费(UNPAID)记录直接删除;已收费(PAID)记录置为 REFUNDED 并记录退费时间,保留审计痕迹。
+     * 已执行(EXECUTED)的医嘱不可退费(需走线下冲红,不在本期)。
+     */
+    @Transactional
+    public VisitDetail refundOrder(Long visitId, Long orderId) {
+        Order existing = orderMapper.selectById(orderId);
+        if (existing == null || !visitId.equals(existing.getVisitId())) {
+            throw new IllegalArgumentException("医嘱不存在或不属于该就诊: " + orderId);
+        }
+        if (!"CREATED".equals(existing.getStatus())) {
+            throw new IllegalStateException("只能退费未执行的医嘱(当前状态: " + existing.getStatus() + ")");
+        }
+        existing.setStatus("CANCELLED");
+        orderMapper.updateById(existing);
+
+        // 未收费 → 直接删除;已收费 → 置 REFUNDED + 记录退费时间(不物理删除,保审计)
+        chargeMapper.selectList(null).stream()
+                .filter(c -> orderId.equals(c.getOrderId()) && visitId.equals(c.getVisitId()))
+                .forEach(c -> {
+                    if ("UNPAID".equals(c.getPayStatus())) {
+                        chargeMapper.deleteById(c.getId());
+                    } else if ("PAID".equals(c.getPayStatus())) {
+                        c.setPayStatus("REFUNDED");
+                        c.setRefundTime(LocalDateTime.now());
+                        chargeMapper.updateById(c);
+                    }
+                });
 
         readModelService.refresh(visitId);
         return getDetail(visitId);
@@ -206,6 +279,14 @@ public class VisitService {
     /** 收费:同一事务内把所有 UNPAID 收费置为 PAID;已确单则推进为进行中(IN_PROGRESS)。 */
     @Transactional
     public VisitDetail pay(Long visitId) {
+        // 前置校验:草稿(未确单)就诊单不可结算,需医生先确单
+        Visit visit = visitMapper.selectById(visitId);
+        if (visit == null) {
+            throw new IllegalArgumentException("就诊不存在: " + visitId);
+        }
+        if (VisitStatus.of(visit.getStatus()) == VisitStatus.CREATED) {
+            throw new IllegalStateException("就诊单尚未确单,不可结算,请先由医生确单");
+        }
         List<Charge> unpaid = chargeMapper.selectList(null).stream()
                 .filter(c -> visitId.equals(c.getVisitId()) && "UNPAID".equals(c.getPayStatus()))
                 .toList();
@@ -215,44 +296,97 @@ public class VisitService {
             chargeMapper.updateById(c);
         }
         // 收费完成后,已确单就诊单自动推进为进行中(进入就诊执行阶段)
-        Visit visit = visitMapper.selectById(visitId);
-        if (visit != null && "CONFIRMED".equals(visit.getStatus())) {
-            visit.setStatus("IN_PROGRESS");
+        if (VisitStatus.of(visit.getStatus()) == VisitStatus.CONFIRMED) {
+            visit.transitTo(VisitStatus.IN_PROGRESS);
             visitMapper.updateById(visit);
         }
         readModelService.refresh(visitId);
+        // 发布缴费完成通知:仅当有药品医嘱时通知药房
+        boolean hasMedication = orderMapper.selectList(
+                new LambdaQueryWrapper<Order>()
+                        .eq(Order::getVisitId, visitId)
+                        .eq(Order::getType, "MEDICATION"))
+                .stream().anyMatch(o -> "CREATED".equals(o.getStatus()));
+        if (hasMedication) {
+            var patient = patientService.get(visit.getPatientId());
+            String patientName = patient != null ? patient.getName() : "患者";
+            eventPublisher.publishEvent(new VisitStatusEvent(
+                    visitId, visit.getPatientId(), patientName,
+                    "PAID", "就诊单已缴费成功，请发药"));
+        }
         return getDetail(visitId);
     }
 
     /**
-     * 若该就诊单所有医嘱都已执行/已取消(无 CREATED 剩余),自动推进为已完成。
-     * 在每次医嘱执行/取消动作后调用。
+     * 手动结束就诊:CONFIRMED / IN_PROGRESS → FINISHED,由医生显式触发。
+     * 前置校验:存在未缴(UNPAID)费用 → 拒绝。
+     * 已缴费但尚未执行的医嘱属下游(药房/检验)职责,默认保留不作废,患者仍可继续取药/检验;
+     * 仅 forceCancelOrders=true(如患者放弃)时才批量作废这些医嘱并退费。
+     * 幂等(已 FINISHED 直接返回)。
      */
     @Transactional
-    public void tryAutoFinish(Long visitId) {
-        List<Order> orders = orderMapper.selectList(
-                new LambdaQueryWrapper<Order>().eq(Order::getVisitId, visitId));
-        boolean allDone = !orders.isEmpty() && orders.stream()
-                .allMatch(o -> "EXECUTED".equals(o.getStatus()) || "CANCELLED".equals(o.getStatus()));
-        if (allDone) {
-            Visit visit = visitMapper.selectById(visitId);
-            if (visit != null && !"FINISHED".equals(visit.getStatus())) {
-                visit.setStatus("FINISHED");
-                visitMapper.updateById(visit);
-            }
+    public VisitDetail finishVisit(Long visitId, boolean forceCancelOrders) {
+        Visit visit = visitMapper.selectById(visitId);
+        if (visit == null) {
+            throw new IllegalArgumentException("就诊不存在: " + visitId);
         }
+        VisitStatus curStatus = VisitStatus.of(visit.getStatus());
+        if (curStatus.isTerminal()) {
+            return getDetail(visitId);
+        }
+        if (curStatus != VisitStatus.CONFIRMED && curStatus != VisitStatus.IN_PROGRESS) {
+            throw new IllegalStateException("仅已确单/进行中就诊单可结束(当前状态: " + visit.getStatus() + ")");
+        }
+        boolean hasUnpaid = chargeMapper.selectList(null).stream()
+                .anyMatch(c -> visitId.equals(c.getVisitId()) && "UNPAID".equals(c.getPayStatus()));
+        if (hasUnpaid) {
+            throw new IllegalStateException("存在未缴费用,请先缴费或退费后再结束就诊");
+        }
+
+        // 已缴费但尚未执行的医嘱属下游(药房发药/检验执行)职责:
+        // 默认结束就诊时保留,不作废、不拦截,患者仍可继续取药/检验;
+        // 仅当 forceCancelOrders=true(如患者放弃)时才批量作废并退费。
+        if (forceCancelOrders) {
+            List<Order> pendingOrders = orderMapper.selectList(
+                    new LambdaQueryWrapper<Order>()
+                            .eq(Order::getVisitId, visitId)
+                            .eq(Order::getStatus, "CREATED"));
+            for (Order o : pendingOrders) {
+                o.setStatus("CANCELLED");
+                orderMapper.updateById(o);
+            }
+            // 作废医嘱对应的已收费记录 → 退费(保审计痕迹)
+            List<Long> cancelledIds = pendingOrders.stream().map(Order::getId).toList();
+            chargeMapper.selectList(null).stream()
+                    .filter(c -> visitId.equals(c.getVisitId()) && cancelledIds.contains(c.getOrderId()))
+                    .forEach(c -> {
+                        if ("PAID".equals(c.getPayStatus())) {
+                            c.setPayStatus("REFUNDED");
+                            c.setRefundTime(LocalDateTime.now());
+                            chargeMapper.updateById(c);
+                        }
+                    });
+        }
+
+        visit.transitTo(VisitStatus.FINISHED);
+        visitMapper.updateById(visit);
+        readModelService.refresh(visitId);
+        var patient = patientService.get(visit.getPatientId());
+        String patientName = patient != null ? patient.getName() : "患者";
+        eventPublisher.publishEvent(new VisitStatusEvent(
+                visitId, visit.getPatientId(), patientName,
+                "FINISHED", "就诊已完成，报告已生成"));
+        return getDetail(visitId);
     }
 
     /** 就诊详情投影:就诊 + 医嘱 + 收费 + 名称解析 + 收费状态。 */
     public VisitDetail getDetail(Long visitId) {
         Visit visit = visitMapper.selectById(visitId);
         if (visit == null) return null;
-        List<Order> orders = orderMapper.selectList(null).stream()
-                .filter(o -> visitId.equals(o.getVisitId()))
-                .toList();
-        List<Charge> charges = chargeMapper.selectList(null).stream()
-                .filter(c -> visitId.equals(c.getVisitId()))
-                .toList();
+        List<Order> orders = orderMapper.selectList(
+                new LambdaQueryWrapper<Order>().eq(Order::getVisitId, visitId));
+        List<Charge> charges = chargeMapper.selectList(
+                new LambdaQueryWrapper<Charge>().eq(Charge::getVisitId, visitId));
         BigDecimal total = charges.stream()
                 .map(Charge::getAmount)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
@@ -280,9 +414,13 @@ public class VisitService {
         // 构建查询条件
         LambdaQueryWrapper<VisitReadModel> wrapper = new LambdaQueryWrapper<>();
 
-        // 科室过滤
+        // 科室过滤(跨科协作):归属科室(dept_id) 或 有待执行医嘱的执行科室(execution_dept_id) 均可看见。
+        // 用子查询保持单条 SQL + O(1) 分页,total 与 items 一致。
         if (currentDeptId != null) {
-            wrapper.eq(VisitReadModel::getDeptId, currentDeptId);
+            wrapper.and(w -> w
+                    .eq(VisitReadModel::getDeptId, currentDeptId)
+                    .or().inSql(VisitReadModel::getVisitId,
+                            "SELECT visit_id FROM clinical.orders WHERE execution_dept_id = " + currentDeptId));
         }
 
         // 关键字搜索
@@ -416,40 +554,63 @@ public class VisitService {
                 visit.getId().equals(o.getVisitId()) && currentDeptId.equals(o.getExecutionDeptId()));
     }
 
-    /** 确单守卫:已确单就诊单禁止追加/修改/取消医嘱。 */
-    private void assertNotConfirmed(Long visitId) {
-        Visit visit = visitMapper.selectById(visitId);
-        if (visit != null && "CONFIRMED".equals(visit.getStatus())) {
-            throw new IllegalStateException("该就诊单已确单，不可修改或追加医嘱");
-        }
-    }
-
-    /** 执行检查类医嘱(MEDICATION 后 EXAM/LAB):标记并记录 finding。 */
+    /** 执行检查类医嘱(EXAM):标记并记录 finding。 */
     @Transactional
     public VisitDetail executeExam(Long visitId, Long orderId, String finding) {
-        chargeService.assertAllPaid(visitId);  // 收费前置:未缴费拦截执行
         Order order = orderMapper.selectById(orderId);
         if (order == null) throw new IllegalArgumentException("医嘱不存在: " + orderId);
         if (!"EXAM".equals(order.getType())) throw new IllegalArgumentException("非检查类医嘱不可执行");
         if (!"CREATED".equals(order.getStatus())) throw new IllegalStateException("医嘱已执行或已取消");
         order.setStatus("EXECUTED");
+        if (finding != null && !finding.isBlank()) {
+            order.setFinding(finding);
+        }
         orderMapper.updateById(order);
-        tryAutoFinish(visitId);  // 所有医嘱执行完 → 自动完成就诊单
         return getDetail(visitId);
     }
 
-    /** 护士工作台:列出所有 CREATED 状态的 EXAM 医嘱(跨就诊)。 */
-    public List<ExamTaskVO> listPendingExams(Long currentDeptId) {
+    /** 列出检查医嘱(可按状态过滤,按科室过滤)。 */
+    public List<ExamTaskVO> listExams(String status, Long currentDeptId) {
         LambdaQueryWrapper<Order> wrapper = new LambdaQueryWrapper<Order>()
                 .eq(Order::getType, "EXAM")
-                .eq(Order::getStatus, "CREATED");
-        if (currentDeptId != null) wrapper.eq(Order::getExecutionDeptId, currentDeptId);  // 按执行科室过滤
+                .orderByDesc(Order::getId);
+        if (status != null && !status.isBlank()) {
+            wrapper.eq(Order::getStatus, status);
+        }
+        if (currentDeptId != null) wrapper.eq(Order::getExecutionDeptId, currentDeptId);
         List<Order> exams = orderMapper.selectList(wrapper);
         return exams.stream().map(o -> {
             Visit visit = visitMapper.selectById(o.getVisitId());
             String patientName = visit != null ? resolvePatientName(visit.getPatientId()) : null;
             String doctorName = visit != null ? resolveDoctorName(visit.getDoctorId()) : null;
-            return new ExamTaskVO(o.getId(), o.getVisitId(), patientName, doctorName, o.getItemName());
+            return new ExamTaskVO(o.getId(), o.getVisitId(), patientName, doctorName, o.getItemName(),
+                    o.getStatus(), o.getFinding());
+        }).toList();
+    }
+
+    /** 兼容旧调用:仅待执行。 */
+    public List<ExamTaskVO> listPendingExams(Long currentDeptId) {
+        return listExams("CREATED", currentDeptId);
+    }
+
+    /** 获取患者历史就诊记录(含医嘱),供新建就诊时医生参考。 */
+    public List<PatientVisitHistoryVO> getPatientHistory(Long patientId) {
+        List<Visit> visits = visitMapper.selectList(
+                new LambdaQueryWrapper<Visit>()
+                        .eq(Visit::getPatientId, patientId)
+                        .orderByDesc(Visit::getCreatedAt));
+        return visits.stream().map(v -> {
+            String doctorName = resolveDoctorName(v.getDoctorId());
+            String deptName = resolveDeptName(v.getDeptId());
+            List<Order> orders = orderMapper.selectList(
+                    new LambdaQueryWrapper<Order>().eq(Order::getVisitId, v.getId()));
+            List<PatientVisitHistoryVO.OrderSummary> orderSummaries = orders.stream()
+                    .map(o -> new PatientVisitHistoryVO.OrderSummary(
+                            o.getId(), o.getType(), o.getItemName(), o.getStatus(), o.getFinding()))
+                    .toList();
+            return new PatientVisitHistoryVO(
+                    v.getId(), v.getVisitTime() != null ? v.getVisitTime().toString() : null,
+                    v.getStatus(), v.getChiefComplaint(), doctorName, deptName, orderSummaries);
         }).toList();
     }
 
@@ -487,5 +648,13 @@ public class VisitService {
             var dept = departmentService.get(deptId);
             return dept == null ? null : dept.getName();
         } catch (Exception e) { return null; }
+    }
+
+    /** 解析当前登录医生 ID(确单时回填接诊医生用);无法解析返回 null。 */
+    private Long resolveCurrentDoctorId() {
+        String phone = CurrentUserResolver.resolveUsername(null);
+        if (phone == null) return null;
+        var staff = staffService.findByPhone(phone);
+        return staff == null ? null : staff.getId();
     }
 }

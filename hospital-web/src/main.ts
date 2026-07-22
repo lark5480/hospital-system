@@ -1,11 +1,12 @@
-import { createApp } from 'vue'
-import { createPinia } from 'pinia'
+import { bindHttpRouter } from '@/api/http'
+import { bindRouter, initAuth } from '@/stores/auth'
+import '@/styles/index.css'
 import ElementPlus from 'element-plus'
 import 'element-plus/dist/index.css'
+import { createPinia } from 'pinia'
+import { createApp } from 'vue'
 import App from './App.vue'
 import router from './router'
-import { initAuth, bindRouter } from '@/stores/auth'
-import { bindHttpRouter } from '@/api/http'
 
 // 先创建应用并挂载 Pinia / ElementPlus,再执行认证初始化——
 // initAuth 内部会调用 useAuthStore(),必须在 Pinia 成为 active 实例之后,

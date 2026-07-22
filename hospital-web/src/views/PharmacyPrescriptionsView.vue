@@ -13,7 +13,7 @@ const loading = ref(false)
 const filterStatus = ref('')
 const keyword = ref('')
 
-const canExecute = computed(() => hasAuthority('order:execute'))
+const canDispense = computed(() => hasAuthority('pharmacy:dispense'))
 
 const statusMeta: Record<string, { text: string; type: '' | 'success' | 'warning' | 'info' | 'danger' }> = {
   PENDING: { text: '待发药', type: 'warning' },
@@ -121,8 +121,8 @@ onActivated(fetchList)
       <el-table-column label="操作" width="200">
         <template #default="{ row }">
           <el-button size="small" @click="router.push('/pharmacy/prescriptions/' + row.prescription.id)">详情</el-button>
-          <el-button v-if="row.prescription.status === 'PENDING' && canExecute" size="small" type="primary" @click="handleDispense(row.prescription.id)">发药</el-button>
-          <el-button v-if="row.prescription.status === 'PENDING' && canExecute" size="small" type="danger" @click="handleCancel(row.prescription.id)">取消</el-button>
+          <el-button v-if="row.prescription.status === 'PENDING' && canDispense" size="small" type="primary" @click="handleDispense(row.prescription.id)">发药</el-button>
+          <el-button v-if="row.prescription.status === 'PENDING' && canDispense" size="small" type="danger" @click="handleCancel(row.prescription.id)">取消</el-button>
         </template>
       </el-table-column>
     </el-table>

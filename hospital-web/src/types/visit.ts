@@ -21,7 +21,7 @@ export interface VisitCreatePayload {
 
 export type OrderType = 'MEDICATION' | 'EXAM' | 'LAB'
 export type OrderStatus = 'CREATED' | 'EXECUTED' | 'CANCELLED'
-export type PayStatus = 'UNPAID' | 'PAID'
+export type PayStatus = 'UNPAID' | 'PAID' | 'REFUNDED'
 
 /** 医嘱(一次就诊可包含多条:药品 / 检查 / 检验) */
 export interface Order {
@@ -33,6 +33,10 @@ export interface Order {
   unitPrice: number
   amount: number
   status: OrderStatus
+  /** 执行科室ID（仅检查/检验医嘱） */
+  executionDeptId?: number
+  /** 检查所见/结果（仅 EXAM 类医嘱） */
+  finding?: string
 }
 
 /** 收费记录(每笔医嘱生成一条,随就诊同事务落库) */
@@ -44,6 +48,7 @@ export interface Charge {
   amount: number
   payStatus: PayStatus
   payTime: string | null
+  refundTime?: string | null
 }
 
 /** 就诊详情读模型:就诊 + 医嘱 + 收费 + 合计 + 名称 + 收费状态 */

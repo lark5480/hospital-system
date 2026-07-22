@@ -36,9 +36,12 @@ const router = createRouter({
         { path: 'dashboard', name: 'dashboard', component: DashboardView, meta: { title: '工作台' } },
         { path: 'visits', name: 'visits', component: VisitListView, meta: { title: '门诊就诊' } },
         { path: 'visits/:id', name: 'visit-detail', component: VisitDetailView, meta: { title: '就诊详情' } },
+        { path: 'registration', name: 'registration', component: () => import('@/views/RegistrationView.vue'), meta: { title: '门诊挂号' } },
+        { path: 'registration/screen', name: 'outpatient-screen', component: () => import('@/views/OutpatientScreenView.vue'), meta: { title: '门诊大屏' } },
         { path: 'notifications', name: 'notifications', component: NotificationView, meta: { title: '消息通知' } },
         { path: 'files', name: 'files', component: FileView, meta: { title: '文件管理' } },
         { path: 'patient/booking', name: 'patient-booking', component: PatientBookingView, meta: { title: '套餐预约' } },
+        { path: 'patient/registration', name: 'patient-registration', component: () => import('@/views/PatientRegistrationView.vue'), meta: { title: '门诊挂号' } },
         { path: 'patient/appointments', name: 'patient-appointments', component: PatientAppointmentsView, meta: { title: '我的预约' } },
         { path: 'patient/my-queue', name: 'patient-myqueue', component: PatientMyQueueView, meta: { title: '我的排队' } },
         { path: 'patients', name: 'patients', component: PatientsView, meta: { title: '患者管理' } },
@@ -55,7 +58,8 @@ const router = createRouter({
         { path: 'org/staff', name: 'staff', component: () => import('@/views/StaffView.vue'), meta: { title: '员工管理' } },
         { path: 'org/roles', name: 'roles', component: RoleAuthView, meta: { title: '角色权限' } },
         { path: 'menu-manage', name: 'MenuManage', component: () => import('@/views/MenuManageView.vue'), meta: { title: '菜单管理', requiresAuth: true } },
-        { path: 'cashier', name: 'cashier', component: () => import('@/views/CashierView.vue'), meta: { title: '收费管理' } }
+        { path: 'cashier', name: 'cashier', component: () => import('@/views/CashierView.vue'), meta: { title: '收费管理' } },
+        { path: 'audit-logs', name: 'audit-logs', component: () => import('@/views/AuditLogView.vue'), meta: { title: '操作审计' } }
       ]
     },
     { path: '/:pathMatch(.*)*', name: 'not-found', component: NotFoundView }

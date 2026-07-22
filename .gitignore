@@ -11,6 +11,8 @@ logs/
 *.iml
 .project
 .classpath
+*.swp
+*~
 
 # Env / secrets(绝不提交真实密钥)
 .env
@@ -25,6 +27,11 @@ Thumbs.db
 node_modules/
 dist/
 *.local
+
+# 本地调试产物 / 临时令牌、截图(勿提交)
+token.json
+*.token.json
+*.png
 
 # 本地工具 / AI 助手 / 项目私有配置（不提交 GitHub）
 .claude/

@@ -46,6 +46,7 @@ class DispatchServiceTest {
     @Mock QueueBoardMapper boardMapper;
     @Mock ReportService reportService;
     @Mock ApplicationEventPublisher eventPublisher;
+    @Mock com.hospital.core.dispatch.api.DispatchSseController sseController;
 
     @Captor ArgumentCaptor<ExamTask> taskCaptor;
     @Captor ArgumentCaptor<QueueBoard> boardCaptor;
@@ -54,7 +55,7 @@ class DispatchServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new DispatchService(taskMapper, boardMapper, reportService,eventPublisher);
+        service = new DispatchService(taskMapper, boardMapper, reportService, eventPublisher, sseController);
     }
 
     @Nested

@@ -34,7 +34,7 @@ public class LabResultItem {
     /** 参考范围 */
     private String refRange;
 
-    /** 异常标记:NORMAL / ABNORMAL */
+    /** 异常标记:NORMAL / HIGH / LOW */
     private String abnormalFlag;
 
     /** PENDING / COMPLETED */

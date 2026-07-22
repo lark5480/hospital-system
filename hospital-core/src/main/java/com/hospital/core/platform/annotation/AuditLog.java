@@ -15,4 +15,7 @@ public @interface AuditLog {
 
     /** 操作类型,如 CREATE_VISIT / PAY_CHARGE / BOOK_APPOINTMENT。 */
     String action();
+
+    /** 操作明细(可选),如 "强制作废未执行医嘱"。留空则不记录。 */
+    String detail() default "";
 }

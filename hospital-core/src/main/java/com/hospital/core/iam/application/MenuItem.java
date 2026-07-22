@@ -1,4 +1,4 @@
-package com.hospital.core.iam;
+package com.hospital.core.iam.application;
 
 import java.util.List;
 

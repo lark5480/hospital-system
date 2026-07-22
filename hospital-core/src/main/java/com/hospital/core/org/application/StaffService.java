@@ -1,7 +1,9 @@
 package com.hospital.core.org.application;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.hospital.core.org.domain.Department;
 import com.hospital.core.org.domain.Staff;
+import com.hospital.core.org.infrastructure.DepartmentMapper;
 import com.hospital.core.org.infrastructure.StaffMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -17,6 +19,7 @@ import java.util.List;
 public class StaffService {
 
     private final StaffMapper staffMapper;
+    private final DepartmentMapper departmentMapper;
 
     public List<Staff> list(String position, Long deptId) {
         LambdaQueryWrapper<Staff> q = new LambdaQueryWrapper<Staff>()
@@ -67,5 +70,33 @@ public class StaffService {
     /** 按手机号查找员工(统一账号登录后使用)。 */
     public Staff findByPhone(String phone) {
         return staffMapper.findByPhone(phone);
+    }
+
+    /**
+     * 按统一账号 id 解析员工所属科室名称;无员工 / 无科室返回 null。
+     * 用 staff.user_id 外键关联 sys_user,不依赖手机号字符串,dev/真实登录均可靠。
+     */
+    public String findDepartmentNameByUserId(Long userId) {
+        if (userId == null) return null;
+        // 使用 selectList 避免 TooManyResultsException
+        List<Staff> staffList = staffMapper.selectList(
+                new LambdaQueryWrapper<Staff>().eq(Staff::getUserId, userId).last("LIMIT 1"));
+        if (staffList.isEmpty()) return null;
+        Staff staff = staffList.get(0);
+        if (staff.getDeptId() == null) return null;
+        Department dept = departmentMapper.selectById(staff.getDeptId());
+        return dept != null ? dept.getName() : null;
+    }
+
+    /**
+     * 按统一账号 id 解析员工所属科室 ID;无员工 / 无科室返回 null。
+     */
+    public Long findDepartmentIdByUserId(Long userId) {
+        if (userId == null) return null;
+        List<Staff> staffList = staffMapper.selectList(
+                new LambdaQueryWrapper<Staff>().eq(Staff::getUserId, userId).last("LIMIT 1"));
+        if (staffList.isEmpty()) return null;
+        Staff staff = staffList.get(0);
+        return staff.getDeptId();
     }
 }

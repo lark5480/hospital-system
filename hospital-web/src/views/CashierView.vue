@@ -128,10 +128,10 @@ watch(activeTab, () => fetchAll())
 </template>
 
 <style scoped>
-.toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
-.toolbar h2 { margin: 0; font-size: 18px; }
+.toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--sp-4); }
+.toolbar h2 { margin: 0; font-size: var(--fs-xl); }
 .tabs { margin-top: 0; }
-.card { margin-bottom: 12px; }
-.card-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
-.card-info { color: #666; font-size: 14px; }
+.card { margin-bottom: var(--sp-3); }
+.card-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: var(--sp-2); }
+.card-info { color: var(--text-regular); font-size: var(--fs-base); }
 </style>

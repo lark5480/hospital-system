@@ -21,5 +21,6 @@ public class AuditLog {
     private String actor;
     private String action;
     private String target;
+    private String detail;
     private LocalDateTime createdAt;
 }

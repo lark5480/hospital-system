@@ -10,6 +10,7 @@ import org.springframework.cache.annotation.EnableCaching;
 @MapperScan({
         "com.hospital.core.booking.infrastructure",
         "com.hospital.core.dispatch.infrastructure",
+        "com.hospital.core.iam.infrastructure",
         "com.hospital.core.lab.infrastructure",
         "com.hospital.core.patient.infrastructure",
         "com.hospital.core.pharmacy.infrastructure",

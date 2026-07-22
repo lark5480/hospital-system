@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { onActivated, onMounted, reactive, ref, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -21,7 +21,7 @@ const unpaidVisits = ref<Set<number>>(new Set())
 const statusMeta: Record<string, string> = { PENDING: 'warning', EXECUTED: 'success', CANCELLED: 'info' }
 const statusText: Record<string, string> = { PENDING: '待检测', EXECUTED: '已完成', CANCELLED: '已取消' }
 
-const resultForm = reactive<Record<number, { resultValue: string; unit: string; refRange: string; abnormalFlag: string }>>({})
+const resultForm = reactive<Record<number, { resultValue: string; unit: string; refRange: string }>>({})
 
 async function fetchDetail() {
   loading.value = true
@@ -32,8 +32,7 @@ async function fetchDetail() {
         resultForm[item.id] = {
           resultValue: item.resultValue || '',
           unit: item.unit || '',
-          refRange: item.refRange || '',
-          abnormalFlag: item.abnormalFlag || ''
+          refRange: item.refRange || ''
         }
       }
     }
@@ -57,8 +56,7 @@ async function submitResults() {
       itemId: i.id,
       resultValue: resultForm[i.id]?.resultValue || '',
       unit: resultForm[i.id]?.unit || '',
-      refRange: resultForm[i.id]?.refRange || '',
-      abnormalFlag: resultForm[i.id]?.abnormalFlag || 'NORMAL'
+      refRange: resultForm[i.id]?.refRange || ''
     }))
     await labApi.submitResults(id, { technicianId: 0, items })
     ElMessage.success('结果已提交')
@@ -137,13 +135,10 @@ onActivated(fetchDetail)
         </el-table-column>
         <el-table-column label="标记" width="100">
           <template #default="{ row }">
-            <el-select v-if="editing" v-model="resultForm[row.id].abnormalFlag" size="small">
-              <el-option label="正常" value="NORMAL" />
-              <el-option label="异常" value="ABNORMAL" />
-            </el-select>
-            <el-tag v-else :type="row.abnormalFlag === 'ABNORMAL' ? 'danger' : 'success'" size="small">
-              {{ row.abnormalFlag === 'ABNORMAL' ? '异常' : '正常' }}
-            </el-tag>
+            <el-tag v-if="row.abnormalFlag === 'HIGH'" type="danger" size="small">偏高 ↑</el-tag>
+            <el-tag v-else-if="row.abnormalFlag === 'LOW'" type="warning" size="small">偏低 ↓</el-tag>
+            <el-tag v-else-if="row.abnormalFlag === 'NORMAL'" type="success" size="small">正常</el-tag>
+            <el-tag v-else type="info" size="small">待检测</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="状态" width="90">

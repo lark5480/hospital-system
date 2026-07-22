@@ -1,5 +1,38 @@
 # 医院系统 · 本地中间件编排
-# docker compose up -d 启动全部中间件，前后端代码在本地 IDE 运行。
+# 前后端代码在本地 IDE 运行，中间件（PostgreSQL/Redis/MinIO/RabbitMQ）由本文件编排。
+#
+# ============ 常用命令速查（在本文件所在目录执行） ============
+#
+# 启动全部中间件（后台）：
+#   docker compose up -d
+#
+# 查看容器状态 / 实时日志：
+#   docker compose ps
+#   docker compose logs -f postgres        # 单看某个服务日志，Ctrl+C 退出
+#
+# 停止但保留数据（下次 up 数据还在）：
+#   docker compose stop                    # 仅停止
+#   docker compose down                    # 停止并删除容器/网络（保留数据卷）
+#
+# 【重置数据库】停止并清空数据卷 → 重新拉起：
+#   docker compose down -v                 # 删除容器 + pg-data / minio-data 数据卷
+#   docker compose up -d                   # 全新 pg-data 会重跑 schema.sql 播种
+#   注意：-v 会一并清空 MinIO 已上传文件；仅本项目卷，不影响其他容器。
+#
+# 只重启单个服务：
+#   docker compose restart postgres
+#
+# 验证种子数据是否落库（重置后确认）：
+#   docker exec hospital-postgres psql -U postgres -d hospital -c "SELECT code,name FROM org.department ORDER BY id;"
+#   docker exec hospital-postgres psql -U postgres -d hospital -c "SELECT name,phone,position FROM org.staff ORDER BY phone;"
+#
+# ---- 中间件就绪后，启动应用（各占一个终端）----
+#   mvn -pl hospital-core spring-boot:run                 # :8101（首启会创建统一账号，默认密码 123456）
+#   mvn -pl hospital-notification-service spring-boot:run # :8102
+#   mvn -pl hospital-file-service spring-boot:run         # :8103
+#   mvn -pl hospital-gateway spring-boot:run              # :8104
+#   cd hospital-web && npm run dev                        # :5173（Vite 代理到网关）
+# =============================================================
 
 services:
   postgres:
@@ -13,7 +46,7 @@ services:
       - "5432:5432"
     volumes:
       - pg-data:/var/lib/postgresql/data
-      - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./hospital-core/src/main/resources/db/schema.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-postgres}"]
       interval: 10s

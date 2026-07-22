@@ -1,13 +1,22 @@
 package com.hospital.core.pharmacy.application;
 
+import java.time.LocalDateTime;
+import java.util.List;
+
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.event.EventListener;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.hospital.core.clinical.application.VisitService;
 import com.hospital.core.clinical.domain.Charge;
 import com.hospital.core.clinical.domain.Order;
+import com.hospital.core.clinical.domain.OrderUpdatedEvent;
 import com.hospital.core.clinical.domain.Visit;
+import com.hospital.core.clinical.domain.VisitStatusEvent;
 import com.hospital.core.clinical.infrastructure.ChargeMapper;
 import com.hospital.core.clinical.infrastructure.OrderMapper;
-import com.hospital.core.clinical.infrastructure.VisitMapper;
 import com.hospital.core.org.application.StaffService;
 import com.hospital.core.patient.application.PatientService;
 import com.hospital.core.pharmacy.domain.Prescription;
@@ -17,13 +26,8 @@ import com.hospital.core.pharmacy.infrastructure.PrescriptionMapper;
 import com.hospital.core.report.application.ReportService;
 import com.hospital.core.report.domain.Report;
 import com.hospital.core.report.domain.ReportPdfEvent;
-import lombok.RequiredArgsConstructor;
-import org.springframework.context.ApplicationEventPublisher;
-import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
-import java.time.LocalDateTime;
-import java.util.List;
+import lombok.RequiredArgsConstructor;
 
 /**
  * 药事应用服务:处方创建 → 发药闭环。
@@ -38,7 +42,6 @@ public class PrescriptionService {
     private final PrescriptionMapper prescriptionMapper;
     private final PrescriptionItemMapper itemMapper;
     private final OrderMapper orderMapper;
-    private final VisitMapper visitMapper;
     private final ChargeMapper chargeMapper;
     private final VisitService visitService;
     private final ReportService reportService;
@@ -46,20 +49,31 @@ public class PrescriptionService {
     private final StaffService staffService;
     private final ApplicationEventPublisher eventPublisher;
 
-    /** 从就诊的药品医嘱创建处方(只取 status=CREATED 的医嘱)。创建后同时确单锁定就诊单。 */
+    /**
+     * 监听临床医嘱修改事件:同步更新对应 PENDING 处方明细的快照(名称/数量/单价)。
+     * 医生二次修改药品医嘱后,处方明细随之更新,避免发药时仍显示旧药品名称。
+     * 同步执行,与 editOrder 处于同一事务;已发药(DISPENSED)/已取消明细不受影响。
+     */
+    @EventListener
+    public void onOrderUpdated(OrderUpdatedEvent event) {
+        List<PrescriptionItem> items = itemMapper.selectList(
+                new LambdaQueryWrapper<PrescriptionItem>()
+                        .eq(PrescriptionItem::getOrderId, event.orderId())
+                        .eq(PrescriptionItem::getStatus, "PENDING"));
+        for (PrescriptionItem item : items) {
+            item.setItemName(event.itemName());
+            item.setQuantity(event.quantity());
+            item.setUnitPrice(event.unitPrice());
+            itemMapper.updateById(item);
+        }
+    }
+
+    /** 从就诊的药品医嘱创建处方(只取 status=CREATED 的医嘱)。创建后同时确单锁定就诊单。
+     *  若已有 PENDING 处方,将新药品医嘱追加到现有处方(支持二次诊断追加药品)。 */
     @Transactional
     public Prescription createFromVisit(Long visitId, Long doctorId) {
-        Visit visit = visitMapper.selectById(visitId);
+        Visit visit = visitService.get(visitId);
         if (visit == null) throw new IllegalArgumentException("就诊不存在:" + visitId);
-
-        // 防重复:该就诊已有 PENDING 处方则拒绝
-        Long existCount = prescriptionMapper.selectCount(
-                new LambdaQueryWrapper<Prescription>()
-                        .eq(Prescription::getVisitId, visitId)
-                        .eq(Prescription::getStatus, "PENDING"));
-        if (existCount > 0) {
-            throw new IllegalStateException("该就诊已有待处理的处方，请勿重复创建");
-        }
 
         List<Order> medOrders = orderMapper.selectList(
                 new LambdaQueryWrapper<Order>()
@@ -67,17 +81,59 @@ public class PrescriptionService {
                         .eq(Order::getType, "MEDICATION")
                         .eq(Order::getStatus, "CREATED"));
 
+        // 查找已有的 PENDING 处方
+        Prescription existingPending = prescriptionMapper.selectOne(
+                new LambdaQueryWrapper<Prescription>()
+                        .eq(Prescription::getVisitId, visitId)
+                        .eq(Prescription::getStatus, "PENDING"));
+
+        if (existingPending != null) {
+            // 已有 PENDING 处方:找出尚未纳入的新药品医嘱,追加到现有处方
+            List<Long> existingOrderIds = itemMapper.selectList(
+                    new LambdaQueryWrapper<PrescriptionItem>()
+                            .eq(PrescriptionItem::getPrescriptionId, existingPending.getId()))
+                    .stream().map(PrescriptionItem::getOrderId).toList();
+
+            List<Order> newOrders = medOrders.stream()
+                    .filter(o -> !existingOrderIds.contains(o.getId()))
+                    .toList();
+
+            if (newOrders.isEmpty()) {
+                throw new IllegalStateException("该就诊无可追加的药品医嘱");
+            }
+
+            for (Order o : newOrders) {
+                PrescriptionItem item = new PrescriptionItem();
+                item.setPrescriptionId(existingPending.getId());
+                item.setOrderId(o.getId());
+                item.setItemName(o.getItemName());
+                item.setQuantity(o.getQuantity());
+                item.setUnitPrice(o.getUnitPrice());
+                item.setStatus("PENDING");
+                itemMapper.insert(item);
+            }
+            return existingPending;
+        }
+
         if (medOrders.isEmpty()) {
             throw new IllegalStateException("该就诊无可创建的药品医嘱");
         }
 
-        // 确单:锁定就诊单,此后不可再追加/修改/取消医嘱
-        visitService.confirm(visitId);
+        // 首次从草稿创建处方时确单锁定;若就诊已确单/进行中(回诊做完检查后追加药品),
+        // 就诊单已锁定,跳过确单直接建方,避免 confirm() 对非草稿状态抛异常导致处方回滚。
+        if ("CREATED".equals(visit.getStatus())) {
+            visitService.confirm(visitId);
+        }
+
+        // 医生以就诊单为准(确单时若未指定会回填当前操作医生),传参仅兜底
+        Visit freshVisit = visitService.get(visitId);
+        Long effectiveDoctorId = (freshVisit != null && freshVisit.getDoctorId() != null)
+                ? freshVisit.getDoctorId() : doctorId;
 
         Prescription p = new Prescription();
         p.setVisitId(visitId);
         p.setPatientId(visit.getPatientId());
-        p.setDoctorId(doctorId);
+        p.setDoctorId(effectiveDoctorId);
         p.setStatus("PENDING");
         p.setCreatedAt(LocalDateTime.now());
         prescriptionMapper.insert(p);
@@ -92,6 +148,12 @@ public class PrescriptionService {
             item.setStatus("PENDING");
             itemMapper.insert(item);
         }
+        // 通知收费处：有新处方待收费
+        var patient = patientService.get(visit.getPatientId());
+        String patientName = patient != null ? patient.getName() : "患者";
+        eventPublisher.publishEvent(new VisitStatusEvent(
+                visitId, visit.getPatientId(), patientName,
+                "PRESCRIPTION_CREATED", "新处方已创建，处方号 #" + p.getId() + "，请通知患者缴费"));
         return p;
     }
 
@@ -148,19 +210,6 @@ public class PrescriptionService {
                 p.getPharmacistId());
         eventPublisher.publishEvent(new ReportPdfEvent(report.getId(), report.getPatientId(), report.getTitle(), report.getContent()));
 
-        // 该就诊所有处方都已发完 → 就诊单完结(FINISHED)
-        Long visitId = p.getVisitId();
-        Long pendingCount = prescriptionMapper.selectCount(
-                new LambdaQueryWrapper<Prescription>()
-                        .eq(Prescription::getVisitId, visitId)
-                        .eq(Prescription::getStatus, "PENDING"));
-        if (pendingCount == 0) {
-            Visit visit = visitMapper.selectById(visitId);
-            if (visit != null) {
-                visit.setStatus("FINISHED");
-                visitMapper.updateById(visit);
-            }
-        }
         return p;
     }
 
@@ -203,7 +252,7 @@ public class PrescriptionService {
                 new LambdaQueryWrapper<PrescriptionItem>()
                         .eq(PrescriptionItem::getPrescriptionId, id));
         String patientName = resolvePatientName(p.getPatientId());
-        String doctorName = resolveStaffName(p.getDoctorId());
+        String doctorName = resolveDoctorName(p);
         String pharmacistName = resolveStaffName(p.getPharmacistId());
         return new PrescriptionDetail(p, items, patientName, doctorName, pharmacistName);
     }
@@ -221,6 +270,18 @@ public class PrescriptionService {
         } catch (Exception e) { return null; }
     }
 
+    /** 处方医生名称:处方未记录医生时回退到就诊单医生(历史数据兜底)。 */
+    private String resolveDoctorName(Prescription p) {
+        Long doctorId = p.getDoctorId();
+        if (doctorId == null && p.getVisitId() != null) {
+            var v = visitService.get(p.getVisitId());
+            if (v != null) {
+                doctorId = v.getDoctorId();
+            }
+        }
+        return resolveStaffName(doctorId);
+    }
+
     /** 查询处方列表(含患者和医生名称),可按状态筛选、关键字(患者/医生)搜索。 */
     public List<PrescriptionDetail> listWithDetail(String status, String keyword) {
         List<Prescription> list = list(status);
@@ -230,7 +291,7 @@ public class PrescriptionService {
                             .eq(PrescriptionItem::getPrescriptionId, p.getId()));
             return new PrescriptionDetail(p, items,
                     resolvePatientName(p.getPatientId()),
-                    resolveStaffName(p.getDoctorId()),
+                    resolveDoctorName(p),
                     resolveStaffName(p.getPharmacistId()));
         }).filter(d -> {
             if (keyword == null || keyword.isBlank()) return true;
@@ -238,10 +299,5 @@ public class PrescriptionService {
             return (d.getPatientName() != null && d.getPatientName().toLowerCase().contains(kw))
                     || (d.getDoctorName() != null && d.getDoctorName().toLowerCase().contains(kw));
         }).toList();
-    }
-
-    /** @deprecated 改用 {@link #listWithDetail(String, String)}。 */
-    public List<PrescriptionDetail> listWithDetail(String status) {
-        return listWithDetail(status, null);
     }
 }

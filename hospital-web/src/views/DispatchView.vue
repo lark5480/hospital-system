@@ -4,12 +4,11 @@ import { useRouter } from 'vue-router'
 import { Refresh } from '@element-plus/icons-vue'
 import { useDispatchStore } from '@/stores/dispatch'
 import { callNext, reorderTail, skipTask } from '@/api/dispatch'
+import { subscribeBoardUpdates, unsubscribe } from '@/api/dispatchSSE'
 import type { TaskStatus } from '@/types/dispatch'
 
 const store = useDispatchStore()
 const router = useRouter()
-
-let pollTimer: ReturnType<typeof setInterval> | null = null
 
 const statusMeta: Record<TaskStatus, { text: string; type: '' | 'success' | 'warning' | 'info' | 'danger' }> = {
   PENDING: { text: '待检', type: 'info' },
@@ -25,6 +24,7 @@ const grouped = computed(() =>
 
 function onStationChange() {
   store.fetchBoard()
+  setupSSE()
 }
 
 /** 自动叫号:若已选工位则对该工位叫号,否则对所有工位各叫一个。 */
@@ -50,25 +50,24 @@ function openScreen() {
 
 onMounted(() => {
   store.fetchBoard()
-  startPoll()
+  setupSSE()
 })
 
-// KeepAlive 激活时立刻刷新一帧 + 重启轮询(避免切走期间轮询停摆)
+// KeepAlive 激活时立刻刷新一帧 + 重新订阅SSE
 onActivated(() => {
   store.fetchBoard()
-  startPoll()
+  setupSSE()
 })
 
 onUnmounted(() => {
-  stopPoll()
+  unsubscribe()
 })
 
-function startPoll() {
-  if (pollTimer) return
-  pollTimer = setInterval(() => store.fetchBoard(), 10000)
-}
-function stopPoll() {
-  if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+function setupSSE() {
+  unsubscribe()
+  subscribeBoardUpdates(() => {
+    store.fetchBoard()
+  })
 }
 </script>
 
@@ -140,17 +139,17 @@ function stopPoll() {
 .toolbar {
   display: flex;
   align-items: center;
-  gap: 12px;
-  margin-bottom: 16px;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-4);
   flex-wrap: wrap;
 }
 .hint {
-  color: #8a8f99;
-  font-size: 12px;
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
 }
 .board {
   display: flex;
-  gap: 16px;
+  gap: var(--sp-4);
   flex-wrap: wrap;
   align-items: flex-start;
 }
@@ -158,15 +157,15 @@ function stopPoll() {
   width: 280px;
 }
 .station-title {
-  font-weight: 600;
-  margin-right: 8px;
+  font-weight: var(--fw-semibold);
+  margin-right: var(--sp-2);
 }
 .task {
   display: flex;
   justify-content: space-between;
   align-items: center;
   padding: 10px 0;
-  border-bottom: 1px solid #f0f0f0;
+  border-bottom: 1px solid var(--border-light);
 }
 .task:last-child {
   border-bottom: none;
@@ -177,19 +176,19 @@ function stopPoll() {
   gap: 10px;
 }
 .seq {
-  font-weight: 700;
-  color: #2c6bed;
+  font-weight: var(--fw-bold);
+  color: var(--brand);
 }
 .item {
-  font-weight: 500;
+  font-weight: var(--fw-medium);
 }
 .patient {
-  font-size: 12px;
-  color: #8a8f99;
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
 }
 .task-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
 }
 </style>

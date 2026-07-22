@@ -16,6 +16,7 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.hospital.core.iam.application.MenuService;
 import com.hospital.core.iam.domain.Menu;
 import com.hospital.core.iam.infrastructure.MenuAuthorityMapper;
 import com.hospital.core.iam.infrastructure.MenuMapper;

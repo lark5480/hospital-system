@@ -7,6 +7,7 @@ import com.hospital.core.booking.domain.ExamItemBrief;
 import com.hospital.core.dispatch.domain.ExamTask;
 import com.hospital.core.dispatch.domain.PatientCalledEvent;
 import com.hospital.core.dispatch.domain.QueueBoard;
+import com.hospital.core.dispatch.api.DispatchSseController;
 import com.hospital.core.report.domain.Report;
 import com.hospital.core.report.domain.ReportPdfEvent;
 import com.hospital.core.dispatch.infrastructure.ExamTaskMapper;
@@ -38,6 +39,7 @@ public class DispatchService {
     private final QueueBoardMapper boardMapper;
     private final ReportService reportService;
     private final ApplicationEventPublisher eventPublisher;
+    private final DispatchSseController sseController;
 
     private static final Map<String, Integer> STATUS_ORDER = Map.of(
             "PENDING", 0, "IN_PROGRESS", 1, "SKIPPED", 2, "DONE", 3);
@@ -94,6 +96,8 @@ public class DispatchService {
         syncBoard(t);
         // 回写预约单:该预约首个任务开始 = 到院(CHECKED_IN)
         maybePublishCheckedIn(t.getAppointmentId());
+        // SSE推送
+        sseController.broadcastBoardUpdate(new BoardUpdateEvent(t.getStation(), taskId, "start"));
     }
 
     /** 工位完成检查某任务。若某预约的全部任务均已完成,自动生成报告。 */
@@ -113,6 +117,8 @@ public class DispatchService {
 
         // 自动叫号:推进同 station 下一位待检患者(过号重排由人工 reorder-tail 处理)
         callNext(t.getStation());
+        // SSE推送
+        sseController.broadcastBoardUpdate(new BoardUpdateEvent(t.getStation(), taskId, "complete"));
     }
 
     /** 若某预约的全部任务均为 DONE 状态,自动创建一份已发布的体检报告。 */
@@ -193,6 +199,8 @@ public class DispatchService {
                     cand.getPatientName(), cand.getStation(), cand.getItemName(), calledAt));
             // 回写预约单:该预约首个任务开始 = 到院(CHECKED_IN)
             maybePublishCheckedIn(cand.getAppointmentId());
+            // SSE推送
+            sseController.broadcastBoardUpdate(new BoardUpdateEvent(station, cand.getId(), "callNext"));
             return cand;
         }
         return null;
@@ -213,6 +221,8 @@ public class DispatchService {
         t.setSeq(maxSeq + 1);
         taskMapper.updateById(t);
         syncBoard(t);
+        // SSE推送
+        sseController.broadcastBoardUpdate(new BoardUpdateEvent(t.getStation(), taskId, "reorder"));
     }
 
     /** 跳过:放弃某任务置 SKIPPED(用于患者离开等场景)。 */
@@ -222,6 +232,8 @@ public class DispatchService {
         t.setStatus("SKIPPED");
         taskMapper.updateById(t);
         syncBoard(t);
+        // SSE推送
+        sseController.broadcastBoardUpdate(new BoardUpdateEvent(t.getStation(), taskId, "skip"));
     }
 
     /** 活跃工位列表(存在 PENDING/IN_PROGRESS 任务的 station),供大屏页选择。 */

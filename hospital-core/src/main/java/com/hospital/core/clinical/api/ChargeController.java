@@ -1,5 +1,6 @@
 package com.hospital.core.clinical.api;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.hospital.core.clinical.application.VisitService;
 import com.hospital.core.clinical.domain.Charge;
 import com.hospital.core.clinical.infrastructure.ChargeMapper;
@@ -39,22 +40,27 @@ public class ChargeController {
     }
 
     private List<ChargeVO> listByStatus(String payStatus) {
-        List<Charge> all = chargeMapper.selectList(null);
-        return all.stream()
-                .filter(c -> payStatus.equals(c.getPayStatus()))
-                .map(this::toVO)
-                .toList();
-    }
-
-    private ChargeVO toVO(Charge c) {
-        String patientName = null;
-        try {
-            var visit = visitService.get(c.getVisitId());
-            if (visit != null) {
-                patientName = patientService.getName(visit.getPatientId());
+        List<Charge> all = chargeMapper.selectList(
+                new LambdaQueryWrapper<Charge>()
+                        .eq(Charge::getPayStatus, payStatus)
+                        .orderByDesc(Charge::getId));
+        List<ChargeVO> result = new java.util.ArrayList<>();
+        for (Charge c : all) {
+            com.hospital.core.clinical.domain.Visit visit = null;
+            String patientName = null;
+            try {
+                visit = visitService.get(c.getVisitId());
+                if (visit != null) {
+                    patientName = patientService.getName(visit.getPatientId());
+                }
+            } catch (Exception ignored) {}
+            // 待收费列表排除尚未确单(CREATED)的就诊:医生未确单前不可收费
+            if ("UNPAID".equals(payStatus) && visit != null && "CREATED".equals(visit.getStatus())) {
+                continue;
             }
-        } catch (Exception ignored) {}
-        return new ChargeVO(c, patientName);
+            result.add(new ChargeVO(c, patientName));
+        }
+        return result;
     }
 
     @PostMapping("/api/core/charges/{visitId}/pay")

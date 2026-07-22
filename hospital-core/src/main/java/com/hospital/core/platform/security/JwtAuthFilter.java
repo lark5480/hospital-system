@@ -32,9 +32,8 @@ public class JwtAuthFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
-        String header = request.getHeader("Authorization");
-        if (StringUtils.hasText(header) && header.startsWith(BEARER_PREFIX)) {
-            String token = header.substring(BEARER_PREFIX.length());
+        String token = resolveToken(request);
+        if (StringUtils.hasText(token)) {
             Claims claims = jwtTokenService.parse(token);
             if (claims != null) {
                 List<String> authorities = jwtTokenService.authoritiesOf(claims);
@@ -47,5 +46,18 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             }
         }
         chain.doFilter(request, response);
+    }
+
+    /**
+     * 解析 JWT:优先 Authorization: Bearer 头;
+     * 回退 query 参数 token——SSE 订阅走浏览器原生 EventSource,无法自定义请求头,
+     * 只能把令牌放在 URL query 上携带。
+     */
+    private String resolveToken(HttpServletRequest request) {
+        String header = request.getHeader("Authorization");
+        if (StringUtils.hasText(header) && header.startsWith(BEARER_PREFIX)) {
+            return header.substring(BEARER_PREFIX.length());
+        }
+        return request.getParameter("token");
     }
 }

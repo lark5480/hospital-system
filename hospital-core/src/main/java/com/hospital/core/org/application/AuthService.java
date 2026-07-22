@@ -29,6 +29,7 @@ public class AuthService {
     private final RoleAuthorityMapper roleAuthorityMapper;
     private final JwtTokenService jwtTokenService;
     private final PasswordEncoder passwordEncoder;
+    private final StaffService staffService;
 
     /**
      * 登录:校验手机号 + 密码 → 查多角色 → 权限并集 → 签发 JWT。
@@ -61,12 +62,16 @@ public class AuthService {
         Set<String> authSet = roleAuthorityMapper.findAuthoritiesByRoles(roles);
         List<String> authorities = new ArrayList<>(authSet);
 
+        // 所属科室:经 staff.user_id 外键解析(患者/C 端无 staff 行则为 null)
+        String department = staffService.findDepartmentNameByUserId(user.getId());
+        Long departmentId = staffService.findDepartmentIdByUserId(user.getId());
+
         String token = jwtTokenService.issue(user.getPhone(), roles, authorities);
-        log.info("[AuthService] 登录成功: {}, roles={}", phone, roles);
-        return new LoginResult(token, user.getPhone(), user.getName(), roles.get(0), roles, authorities);
+        log.info("[AuthService] 登录成功: {}, roles={}, dept={}, deptId={}", phone, roles, department, departmentId);
+        return new LoginResult(token, user.getPhone(), user.getName(), roles.get(0), roles, authorities, department, departmentId);
     }
 
     /** 登录响应载体(仅携带必要字段)。 */
     public record LoginResult(String token, String username, String name, String position,
-                              List<String> roles, List<String> authorities) {}
+                              List<String> roles, List<String> authorities, String department, Long departmentId) {}
 }

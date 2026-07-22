@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, onActivated, onDeactivated, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { getBoard, getStations } from '@/api/dispatch'
+import { subscribeBoardUpdates, unsubscribe } from '@/api/dispatchSSE'
 import type { QueueBoardRow } from '@/types/dispatch'
 
 const route = useRoute()
@@ -11,8 +12,7 @@ const selectedStation = ref<string>((route.query.station as string) || '')
 const rows = ref<QueueBoardRow[]>([])
 const loading = ref(false)
 const isFullscreen = ref(false)
-
-let pollTimer: ReturnType<typeof setInterval> | null = null
+const useSSE = ref(false)
 
 /** 当前正在检查的患者(该 station 下 IN_PROGRESS 的第一位)。 */
 const current = computed<QueueBoardRow | undefined>(() =>
@@ -55,6 +55,17 @@ async function loadBoard() {
 
 function onStationChange() {
   loadBoard()
+  // 重新订阅SSE
+  setupSSE()
+}
+
+function setupSSE() {
+  unsubscribe()
+  subscribeBoardUpdates(() => {
+    // 收到推送时刷新数据
+    loadBoard()
+  }, selectedStation.value || undefined)
+  useSSE.value = true
 }
 
 function toggleFullscreen() {
@@ -69,12 +80,22 @@ function toggleFullscreen() {
 onMounted(async () => {
   await loadStations()
   await loadBoard()
-  // 每 10 秒轮询,大屏实时刷新
-  pollTimer = setInterval(loadBoard, 10000)
+  // 使用SSE实时推送
+  setupSSE()
+})
+
+// KeepAlive 缓存:关闭/切走 tab 只触发 deactivated 而非 unmounted。
+// 停用即断开 SSE,切回再重新订阅,避免大屏关闭后连接仍挂在后台。
+onActivated(() => {
+  loadBoard()
+  setupSSE()
+})
+onDeactivated(() => {
+  unsubscribe()
 })
 
 onUnmounted(() => {
-  if (pollTimer) clearInterval(pollTimer)
+  unsubscribe()
   if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {})
 })
 </script>
@@ -125,15 +146,15 @@ onUnmounted(() => {
       已过号(队尾): {{ skipped.map((s) => s.patientName || '—').join('、') }}
     </section>
 
-    <footer class="foot">数据每 10 秒刷新 · {{ loading ? '刷新中…' : '已同步' }}</footer>
+    <footer class="foot">{{ useSSE ? '实时推送已连接' : '轮询模式(10秒)' }} · {{ loading ? '刷新中…' : '已同步' }}</footer>
   </div>
 </template>
 
 <style scoped>
 .screen {
   min-height: 100vh;
-  background: #0c0c0e;
-  color: #f5f5f7;
+  background: var(--screen-bg);
+  color: var(--screen-text);
   display: flex;
   flex-direction: column;
   padding: 32px 48px;
@@ -144,7 +165,7 @@ onUnmounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  border-bottom: 1px solid #26262b;
+  border-bottom: 1px solid var(--screen-border);
   padding-bottom: 20px;
 }
 .station-name {
@@ -155,7 +176,7 @@ onUnmounted(() => {
 .station-name .sub {
   font-size: 15px;
   font-weight: 400;
-  color: #8a8a92;
+  color: var(--screen-muted);
   margin-left: 14px;
 }
 .top-actions {
@@ -169,7 +190,7 @@ onUnmounted(() => {
 }
 .now-label {
   font-size: 20px;
-  color: #8a8a92;
+  color: var(--screen-muted);
   letter-spacing: 4px;
 }
 .now-name {
@@ -181,11 +202,11 @@ onUnmounted(() => {
 .now-name.idle {
   font-size: 64px;
   font-weight: 500;
-  color: #5a5a62;
+  color: var(--screen-faint);
 }
 .now-item {
   font-size: 28px;
-  color: #b8b8c0;
+  color: var(--screen-text-3);
   margin-top: 8px;
 }
 .waiting {
@@ -196,17 +217,17 @@ onUnmounted(() => {
   justify-content: space-between;
   align-items: baseline;
   font-size: 22px;
-  color: #c8c8d0;
-  border-bottom: 1px solid #26262b;
+  color: var(--screen-text-2);
+  border-bottom: 1px solid var(--screen-border);
   padding-bottom: 12px;
   margin-bottom: 16px;
 }
 .waiting-head .count {
   font-size: 16px;
-  color: #8a8a92;
+  color: var(--screen-muted);
 }
 .empty {
-  color: #5a5a62;
+  color: var(--screen-faint);
   font-size: 20px;
   padding: 24px 0;
 }
@@ -222,15 +243,15 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 16px;
-  background: #16161a;
-  border: 1px solid #26262b;
+  background: var(--screen-surface);
+  border: 1px solid var(--screen-border);
   border-radius: 12px;
   padding: 16px 20px;
 }
 .q-seq {
   font-size: 26px;
   font-weight: 700;
-  color: #6a6a72;
+  color: var(--screen-dim);
   min-width: 42px;
 }
 .q-name {
@@ -240,19 +261,19 @@ onUnmounted(() => {
 .q-item {
   margin-left: auto;
   font-size: 16px;
-  color: #8a8a92;
+  color: var(--screen-muted);
 }
 .skipped {
   margin-top: 24px;
   font-size: 15px;
-  color: #6a6a72;
-  border-top: 1px solid #26262b;
+  color: var(--screen-dim);
+  border-top: 1px solid var(--screen-border);
   padding-top: 16px;
 }
 .foot {
   margin-top: 20px;
   text-align: right;
   font-size: 13px;
-  color: #5a5a62;
+  color: var(--screen-faint);
 }
 </style>

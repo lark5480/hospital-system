@@ -100,14 +100,14 @@ async function downloadPdf(report: ReportRecord) {
 }
 .toolbar h2 {
   margin: 0;
-  font-size: 18px;
+  font-size: var(--fs-xl);
 }
 .report-content {
   white-space: pre-wrap;
   line-height: 1.8;
-  background: #fafafa;
-  padding: 16px;
-  border-radius: 6px;
-  font-size: 14px;
+  background: var(--slate-50);
+  padding: var(--sp-4);
+  border-radius: var(--radius);
+  font-size: var(--fs-base);
 }
 </style>

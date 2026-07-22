@@ -1,7 +1,23 @@
 package com.hospital.core.clinical.api;
 
+import java.util.List;
+import java.util.Map;
+
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
 import com.hospital.core.clinical.application.ExamTaskVO;
 import com.hospital.core.clinical.application.PageResult;
+import com.hospital.core.clinical.application.PatientVisitHistoryVO;
 import com.hospital.core.clinical.application.VisitDetail;
 import com.hospital.core.clinical.application.VisitService;
 import com.hospital.core.clinical.domain.Order;
@@ -10,13 +26,8 @@ import com.hospital.core.org.application.StaffService;
 import com.hospital.core.org.domain.Staff;
 import com.hospital.core.platform.annotation.AuditLog;
 import com.hospital.core.platform.security.CurrentUserResolver;
-import lombok.RequiredArgsConstructor;
-import org.springframework.http.ResponseEntity;
-import org.springframework.security.access.prepost.PreAuthorize;
-import org.springframework.web.bind.annotation.*;
 
-import java.util.List;
-import java.util.Map;
+import lombok.RequiredArgsConstructor;
 
 @RestController
 @RequiredArgsConstructor
@@ -90,11 +101,20 @@ public class VisitController {
         return ResponseEntity.ok(visitService.cancelOrder(id, orderId));
     }
 
+    @PreAuthorize("hasAuthority('charge:pay')")
+    @AuditLog(action = "REFUND_ORDER")
+    @PostMapping("/api/core/visits/{id}/orders/{orderId}/refund")
+    public ResponseEntity<VisitDetail> refundOrder(@PathVariable Long id, @PathVariable Long orderId) {
+        return ResponseEntity.ok(visitService.refundOrder(id, orderId));
+    }
+
     @PreAuthorize("hasAuthority('order:execute')")
     @AuditLog(action = "EXECUTE_EXAM_ORDER")
     @PostMapping("/api/core/visits/{id}/exams/{orderId}/execute")
-    public ResponseEntity<VisitDetail> executeExam(@PathVariable Long id, @PathVariable Long orderId) {
-        return ResponseEntity.ok(visitService.executeExam(id, orderId, null));
+    public ResponseEntity<VisitDetail> executeExam(@PathVariable Long id, @PathVariable Long orderId,
+                                                   @RequestBody(required = false) java.util.Map<String, String> body) {
+        String finding = body != null ? body.get("finding") : null;
+        return ResponseEntity.ok(visitService.executeExam(id, orderId, finding));
     }
 
     @PreAuthorize("hasAuthority('charge:pay')")
@@ -114,6 +134,18 @@ public class VisitController {
     @PreAuthorize("hasAuthority('order:execute')")
     public ResponseEntity<List<ExamTaskVO>> pendingExams() {
         return ResponseEntity.ok(visitService.listPendingExams(currentDeptId()));
+    }
+
+    @GetMapping("/api/core/visits/exams")
+    @PreAuthorize("hasAuthority('order:execute')")
+    public ResponseEntity<List<ExamTaskVO>> listExams(@RequestParam(required = false) String status) {
+        return ResponseEntity.ok(visitService.listExams(status, currentDeptId()));
+    }
+
+    /** 患者历史就诊记录(含医嘱和检查所见),供新建就诊时参考。 */
+    @GetMapping("/api/core/visits/patient-history")
+    public ResponseEntity<List<PatientVisitHistoryVO>> patientHistory(@RequestParam Long patientId) {
+        return ResponseEntity.ok(visitService.getPatientHistory(patientId));
     }
 
     @ExceptionHandler(IllegalArgumentException.class)
@@ -140,5 +172,13 @@ public class VisitController {
     @PostMapping("/api/core/visits/{id}/confirm")
     public ResponseEntity<VisitDetail> confirm(@PathVariable Long id) {
         return ResponseEntity.ok(visitService.confirm(id));
+    }
+
+    @PreAuthorize("hasAuthority('visit:audit')")
+    @AuditLog(action = "FINISH_VISIT")
+    @PostMapping("/api/core/visits/{id}/finish")
+    public ResponseEntity<VisitDetail> finish(@PathVariable Long id,
+            @RequestParam(defaultValue = "false") boolean force) {
+        return ResponseEntity.ok(visitService.finishVisit(id, force));
     }
 }

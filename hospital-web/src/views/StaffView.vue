@@ -2,7 +2,11 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import * as orgApi from '@/api/org'
+import * as patientApi from '@/api/patient'
 import type { Staff, Department } from '@/types/org'
+import { hasAuthority } from '@/stores/auth'
+
+const canAdmin = hasAuthority('system:admin')
 
 const positionLabels: Record<string, string> = {
   DOCTOR: '医生', NURSE: '护士', PHARMACIST: '药师', CASHIER: '收费员', ADMIN: '管理员'
@@ -102,6 +106,26 @@ async function handleDelete(row: Staff) {
   }
 }
 
+async function handleResetPassword(row: Staff) {
+  if (!row.userId) {
+    ElMessage.warning('该员工未关联登录账号，无法重置密码')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确定要重置 ${row.name} 的密码吗？重置后密码为 123456`,
+      '重置密码',
+      { confirmButtonText: '确认重置', cancelButtonText: '取消', type: 'warning' }
+    )
+    await patientApi.resetPassword(row.userId)
+    ElMessage.success('密码已重置为 123456')
+  } catch (e: any) {
+    if (e !== 'cancel') {
+      ElMessage.error(e?.response?.data?.message || e?.message || '重置失败')
+    }
+  }
+}
+
 onMounted(() => { fetchList(); loadDepartments() })
 </script>
 
@@ -130,9 +154,10 @@ onMounted(() => { fetchList(); loadDepartments() })
         </template>
       </el-table-column>
       <el-table-column prop="createdAt" label="创建时间" width="180" />
-      <el-table-column label="操作" width="150">
+      <el-table-column label="操作" width="200">
         <template #default="{ row }">
           <el-button size="small" @click="openEdit(row)">编辑</el-button>
+          <el-button v-if="canAdmin && row.userId" size="small" type="warning" @click="handleResetPassword(row)">重置密码</el-button>
           <el-button size="small" type="danger" @click="handleDelete(row)">删除</el-button>
         </template>
       </el-table-column>

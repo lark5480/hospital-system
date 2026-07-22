@@ -1,7 +1,7 @@
-﻿import { defineStore } from 'pinia'
-import { ref } from 'vue'
 import * as visitApi from '@/api/visit'
-import type { VisitDetail, VisitCreatePayload, Order } from '@/types/visit'
+import type { Order, VisitCreatePayload, VisitDetail } from '@/types/visit'
+import { defineStore } from 'pinia'
+import { ref } from 'vue'
 
 export const useVisitStore = defineStore('visit', () => {
   const visits = ref<VisitDetail[]>([])
@@ -42,7 +42,7 @@ export const useVisitStore = defineStore('visit', () => {
 
   async function addOrder(
     id: number,
-    payload: Pick<Order, 'type' | 'itemName' | 'quantity' | 'unitPrice'>
+    payload: Pick<Order, 'type' | 'itemName' | 'quantity' | 'unitPrice' | 'executionDeptId'>
   ) {
     detail.value = await visitApi.addOrder(id, payload)
   }
@@ -59,6 +59,10 @@ export const useVisitStore = defineStore('visit', () => {
     detail.value = await visitApi.cancelOrder(id, orderId)
   }
 
+  async function refundOrder(id: number, orderId: number) {
+    detail.value = await visitApi.refundOrder(id, orderId)
+  }
+
   async function pay(id: number) {
     detail.value = await visitApi.payVisit(id)
   }
@@ -67,10 +71,14 @@ export const useVisitStore = defineStore('visit', () => {
     detail.value = await visitApi.confirmVisit(id)
   }
 
+  async function finishVisit(id: number, force = false) {
+    detail.value = await visitApi.finishVisit(id, force)
+  }
+
   async function deleteVisit(id: number) {
     await visitApi.deleteVisit(id)
     await fetchList()
   }
 
-  return { visits, detail, loading, total, pageNum, pageSize, keyword, fetchList, create, fetchDetail, addOrder, updateOrder, cancelOrder, pay, confirm, deleteVisit }
+  return { visits, detail, loading, total, pageNum, pageSize, keyword, fetchList, create, fetchDetail, addOrder, updateOrder, cancelOrder, refundOrder, pay, confirm, finishVisit, deleteVisit }
 })

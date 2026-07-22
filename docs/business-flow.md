@@ -17,11 +17,11 @@
 
 | 岗位 | 角色编码 | authorities(可后台配) | 可访问菜单 |
 |---|---|---|---|
-| **医生** | `DOCTOR` | visit:entry, visit:audit, order:execute | 工作台/就诊/患者/通知/报告/排队看板/医技管理 |
+| **医生** | `DOCTOR` | visit:entry, visit:audit, order:execute | 工作台/就诊/挂号/患者/通知/报告/排队大屏/检查执行/医技管理 |
 | **护士** | `NURSE` | order:execute | 工作台/医技管理(检验) |
 | **收费员** | `CASHIER` | charge:pay | 工作台/收费管理 |
 | **药师** | `PHARMACIST` | pharmacy:dispense | 工作台/药事管理 |
-| **管理员** | `ADMIN` | 全部 6 权 | 全部 |
+| **管理员** | `ADMIN` | 全部 7 权 | 全部 |
 | **患者** | `PATIENT` | patient:booking | 工作台+体检预约(C端) |
 
 > 角色↔权限映射入库(`platform.role_authority`),管理员可在"角色权限管理"后台动态调整,不再改代码/JSON。
@@ -39,14 +39,20 @@
 | 录入检验结果 / 取消申请 | order:execute | - | ✅ | - | - | ✅ |
 | 执行检查(B 超 / CT) | order:execute | - | ✅ | - | - | ✅ |
 | 结算收费 | charge:pay | - | - | ✅ | - | ✅ |
+| 退费 | charge:pay | - | - | ✅ | - | ✅ |
+| 确单 / 完成就诊 | visit:entry / visit:audit | ✅ | - | - | - | ✅ |
+| 挂号 / 叫号 | visit:entry | ✅ | - | - | - | ✅ |
 | 科室 / 员工管理 | system:admin | - | - | - | - | ✅ |
+| 角色权限配置 | system:admin | - | - | - | - | ✅ |
+| 菜单管理 | system:admin | - | - | - | - | ✅ |
 | 文件管理 | system:admin | - | - | - | - | ✅ |
+| 查看审计日志 | system:admin | - | - | - | - | ✅ |
 
 ### 医嘱类型分支
 
 #### MEDICATION(药品)
 ```
-医生开药品医嘱 → 医生创建处方(visit:entry, 聚合该就诊所有药品 ORDER)
+医生开药品医嘱 → 医生创建处方(Visit:entry, 聚合该就诊所有药品 ORDER)
    → 收费员结算该就诊单全部项目(charge:pay)
      → 药师发药(pharmacy:dispense, 系统校验已全部缴费)
        → 发药完成,自动生成门诊病历报告(PUBLISHED)
@@ -68,8 +74,13 @@
 ### 就诊状态机
 
 - `Visit.status`:`CREATED → CONFIRMED → IN_PROGRESS → FINISHED`
+  - 转换由 `VisitStatus` 枚举收口,非法转换抛 `IllegalStateException`
+  - `CREATED` → `CONFIRMED`:`confirm()` 确单,锁定后不可追加医嘱
+  - `CONFIRMED` → `IN_PROGRESS` / `FINISHED`:`finish()` 完成就诊
+  - `IN_PROGRESS` → `FINISHED`:`finish()` 完成就诊
 - `Order.status`:`CREATED → EXECUTED | CANCELLED`
-- `Charge.payStatus`:`UNPAID → PAID`
+- `Charge.payStatus`:`UNPAID → PAID | REFUNDED`
+- `Registration.status`:`WAITING → CALLED | CANCELLED`
 - 前进闸门:确单(`confirm`)后才能收费(`pay`);**收费已结清**才能执行检查 / 发药 / 录入结果(`ChargeService.assertAllPaid` 前置校验);全部医嘱终结后自动 `FINISHED`。
 - 注意:「创建处方」「创建检验申请」会顺带调用 `visitService.confirm()` 锁定就诊单,锁定后不可再追加医嘱(`addOrder` 受 `assertNotConfirmed` 约束),操作顺序需留意。
 
@@ -77,10 +88,11 @@
 
 1. **处方由医师创建**(visit:entry),不受收费限制。医生在就诊详情确认所有医嘱后即可创建处方,收费员只负责结算。
 2. **发药前必须已收费**:发药前后端校验所有关联 charge 已 PAID,有 UNPAID 则拒绝发药。
-3. **收费不可退**:已结算的 charge 不退费,关联医嘱不可修改 / 取消。
+3. **收费可退**:已结算的 charge 可退费(REFUNDED),关联医嘱不可修改 / 取消。
 4. **报告自动发布**:LAB 结果录入完成 / EXAM 执行完成 / MEDICATION 发药完成,系统自动为该就诊生成对应类型的 PUBLISHED 报告。
-5. **菜单级权限**:前端 `MenuService` 按当前用户 authorities 裁剪菜单树,无权限的菜单项不渲染。
+5. **菜单级权限**:后端 `MenuService` 从 `platform.menu` + `platform.menu_authority` 表加载菜单树,按当前用户 authorities 动态裁剪。
 6. **医嘱纠偏**:未执行的医嘱(CREATED)可修改(名称/数量/单价)或取消,已执行或已收费的不动。
+7. **门诊挂号**:患者选科室/医生 → 生成排队号(WAITING)→ 医生叫号(CALLED,关联就诊单)→ 取消(CANCELLED)。
 
 ---
 
@@ -94,8 +106,8 @@
 患者登录 → 浏览套餐 → 选日期/时段 → 确认预约 → 进入排队
    │                         │                   │              │
    └─ /patient/booking ───────┘                   │              │
-                       └─ 原子占号(不超卖) ────────┘              │
-                                   └─ 事件驱动排班 → 看板 → 执行 → 报告
+                        └─ 原子占号(不超卖) ────────┘              │
+                                    └─ 事件驱动排班 → 看板 → 执行 → 报告
 ```
 
 ### 患者端菜单
@@ -133,26 +145,26 @@
 
 | ADR | 标题 | 状态 |
 |---|---|---|
-| ADR-001 | 模块化单体而非微服务 | Accepted |
-| ADR-002 | 单一关系库 + 每模块独立 schema | Accepted |
-| ADR-003 | 模块边界由 ArchUnit 强制 | Accepted |
-| ADR-004 | 互操作层讲 HL7 v2 + FHIR R4 | Accepted |
-| ADR-005 | 本地运行(Docker Compose) | Accepted |
-| ADR-006 | 统一 IAM:默认自管 JWT,预留外部 IdP 接入 | Accepted |
-| ADR-007 | 单体阶段中间件范围 | Accepted |
-| ADR-008 | 日志存储:Loki + PostgreSQL 审计 | Accepted |
-| ADR-009 | 微服务 vs 模块化单体再确认 | Accepted |
-| ADR-010 | 作品集采用混合形态 | Accepted |
-| ADR-011 | 前端采用 Vue 3 + TypeScript + Vite | Accepted |
-| ADR-012 | 自管 JWT + 七权分立 RBAC | Accepted |
-| ADR-013 | 前端引入 Pinia + 中后台布局 | Accepted |
-| ADR-014 | C 端患者域与体检预约 | Accepted |
-| ADR-015 | 菜单级权限后端驱动 | Accepted |
-| ADR-016 | 排队分发引擎(事件驱动 + CQRS) | Accepted |
-| ADR-017 | 默认态显式 permitAll | Accepted |
-| ADR-018 | AMQP 事件桥接默认启用 | Accepted |
-| ADR-019 | 报告模块作为独立限界上下文 | Accepted |
-| ADR-020 | 当前用户身份解析约定 | Accepted |
-| ADR-021 | 就诊医嘱可修改 / 取消 | Accepted |
-| ADR-022 | 处方与检验权限按业务流程收口(医生创建→药师发药) | Accepted |
-| ADR-023 | JWT 自动刷新(axios 静默续期) | Accepted |
+| ADR-001 | 模块化单体而非微服务 | 已采纳 |
+| ADR-002 | 单一关系库 + 每模块独立 schema | 已采纳 |
+| ADR-003 | 模块边界由 ArchUnit 强制 | 已采纳 |
+| ADR-004 | 互操作层讲 HL7 v2 + FHIR R4 | 已采纳 |
+| ADR-005 | 本地运行(Docker Compose) | 已采纳 |
+| ADR-006 | 统一 IAM:自管 JWT,预留外部 IdP 接入 | 已采纳 |
+| ADR-007 | 单体阶段中间件范围 | 已采纳 |
+| ADR-008 | 日志存储:Loki + PostgreSQL 审计 | 已采纳 |
+| ADR-009 | 微服务 vs 模块化单体再确认 | 已采纳 |
+| ADR-010 | 作品集采用混合形态 | 已采纳 |
+| ADR-011 | 前端采用 Vue 3 + TypeScript + Vite | 已采纳 |
+| ADR-012 | 自管 JWT + 七权分立 RBAC | 已采纳 |
+| ADR-013 | 前端引入 Pinia + 中后台布局 | 已采纳 |
+| ADR-014 | C 端患者域与体检预约 | 已采纳 |
+| ADR-015 | 菜单级权限后端驱动(DB 存储) | 已采纳 |
+| ADR-016 | 排队分发引擎(事件驱动 + CQRS) | 已采纳 |
+| ADR-017 | 默认态显式 permitAll | 已采纳 |
+| ADR-018 | AMQP 事件桥接默认启用 | 已采纳 |
+| ADR-019 | 报告模块作为独立限界上下文 | 已采纳 |
+| ADR-020 | 当前用户身份解析约定 | 已采纳 |
+| ADR-021 | 就诊医嘱可修改 / 取消 | 已采纳 |
+| ADR-022 | 处方与检验权限按业务流程收口(医生创建→药师发药) | 已采纳 |
+| ADR-023 | 门诊挂号与分诊排队 | 已采纳 |

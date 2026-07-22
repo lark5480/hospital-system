@@ -96,9 +96,9 @@ onMounted(fetchRoles)
 </template>
 
 <style scoped>
-.toolbar { display: flex; align-items: center; margin-bottom: 16px; }
-.toolbar h2 { margin: 0; font-size: 18px; }
-.desc { color: #909399; margin-bottom: 16px; }
-.el-checkbox-group { display: flex; flex-direction: column; gap: 8px; }
-.footer { margin-top: 24px; text-align: right; }
+.toolbar { display: flex; align-items: center; margin-bottom: var(--sp-4); }
+.toolbar h2 { margin: 0; font-size: var(--fs-xl); }
+.desc { color: var(--text-secondary); margin-bottom: var(--sp-4); }
+.el-checkbox-group { display: flex; flex-direction: column; gap: var(--sp-2); }
+.footer { margin-top: var(--sp-6); text-align: right; }
 </style>

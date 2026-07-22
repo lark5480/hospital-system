@@ -13,7 +13,6 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -22,7 +21,6 @@ import com.hospital.core.clinical.domain.Order;
 import com.hospital.core.clinical.domain.Visit;
 import com.hospital.core.clinical.infrastructure.ChargeMapper;
 import com.hospital.core.clinical.infrastructure.OrderMapper;
-import com.hospital.core.clinical.infrastructure.VisitMapper;
 import com.hospital.core.org.application.StaffService;
 import com.hospital.core.patient.application.PatientService;
 import com.hospital.core.pharmacy.domain.Prescription;
@@ -45,7 +43,6 @@ class PrescriptionServiceTest {
     @Mock PrescriptionMapper prescriptionMapper;
     @Mock PrescriptionItemMapper itemMapper;
     @Mock OrderMapper orderMapper;
-    @Mock VisitMapper visitMapper;
     @Mock ChargeMapper chargeMapper;
     @Mock VisitService visitService;
     @Mock ReportService reportService;
@@ -53,13 +50,11 @@ class PrescriptionServiceTest {
     @Mock StaffService staffService;
     @Mock ApplicationEventPublisher eventPublisher;
 
-    ArgumentCaptor<Visit> visitCaptor = ArgumentCaptor.forClass(Visit.class);
-
     PrescriptionService service;
 
     @BeforeEach
     void setUp() {
-        service = new PrescriptionService(prescriptionMapper, itemMapper, orderMapper, visitMapper, chargeMapper, visitService, reportService, patientService, staffService, eventPublisher);
+        service = new PrescriptionService(prescriptionMapper, itemMapper, orderMapper, chargeMapper, visitService, reportService, patientService, staffService, eventPublisher);
     }
 
     @Nested
@@ -69,7 +64,7 @@ class PrescriptionServiceTest {
         @Test
         @DisplayName("从就诊的 MEDICATION 医嘱创建处方 → 返回 PENDING 处方")
         void createFromVisit_success() {
-            when(visitMapper.selectById(10L)).thenReturn(visit(10L));
+            when(visitService.get(10L)).thenReturn(visit(10L));
             when(orderMapper.selectList(any())).thenReturn(List.of(medOrder(1L, "头孢"), medOrder(2L, "布洛芬")));
 
             Prescription result = service.createFromVisit(10L, 5L);
@@ -83,7 +78,7 @@ class PrescriptionServiceTest {
         @Test
         @DisplayName("该就诊无 MEDICATION 医嘱 → IllegalStateException")
         void createFromVisit_noOrders_throws() {
-            when(visitMapper.selectById(10L)).thenReturn(visit(10L));
+            when(visitService.get(10L)).thenReturn(visit(10L));
             when(orderMapper.selectList(any())).thenReturn(List.of());
             assertThatThrownBy(() -> service.createFromVisit(10L, 5L))
                     .isInstanceOf(IllegalStateException.class)
@@ -96,16 +91,13 @@ class PrescriptionServiceTest {
     class Dispense {
 
         @Test
-        @DisplayName("PENDING 处方 → 返回 DISPENSED, 含药师 ID, 回写医嘱;无待发药则就诊单完结")
+        @DisplayName("PENDING 处方 → 返回 DISPENSED, 含药师 ID, 回写医嘱, 发布报告 PDF 事件")
         void dispense_success() {
             var rx = pendingRx();
             rx.setVisitId(10L);
             when(prescriptionMapper.selectById(1L)).thenReturn(rx);
             when(itemMapper.selectList(any())).thenReturn(List.of(pendingItem(1L, "头孢")));
             when(orderMapper.selectById(10L)).thenReturn(creOrder(10L));
-            // 该就诊已无待发药处方 → 应完结就诊单
-            when(prescriptionMapper.selectCount(any())).thenReturn(0L);
-            when(visitMapper.selectById(10L)).thenReturn(visit(10L));
             // 发药生成报告(B端报告出 PDF 的修复):桩掉 createAndPublish 返回带 id 的报告
             var report = new Report();
             report.setId(99L);
@@ -116,9 +108,6 @@ class PrescriptionServiceTest {
             assertThat(result.getStatus()).isEqualTo("DISPENSED");
             assertThat(result.getPharmacistId()).isEqualTo(7L);
             assertThat(result.getDispensedAt()).isNotNull();
-            // 验证就诊单被完结
-            verify(visitMapper).updateById(visitCaptor.capture());
-            assertThat(visitCaptor.getValue().getStatus()).isEqualTo("FINISHED");
             // 发药应发布报告 PDF 事件(修复:B 端报告此前无 PDF)
             verify(eventPublisher).publishEvent(any(ReportPdfEvent.class));
         }

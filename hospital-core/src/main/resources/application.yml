@@ -33,6 +33,10 @@ mybatis-plus:
       id-type: auto
 
 logging:
+  # 控制台日志字符集:默认 UTF-8(Linux/CI 正确)。Windows 控制台若为 GBK 出现乱码,
+  # 可 chcp 65001 让控制台切到 UTF-8,或设环境变量 CONSOLE_LOG_CHARSET=GBK 让日志按 GBK 输出
+  charset:
+    console: ${CONSOLE_LOG_CHARSET:UTF-8}
   level:
     com.hospital: debug
 

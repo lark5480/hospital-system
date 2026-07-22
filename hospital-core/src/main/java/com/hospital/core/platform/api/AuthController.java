@@ -7,6 +7,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 @RestController
@@ -21,12 +22,17 @@ public class AuthController {
         if (result == null) {
             return ResponseEntity.status(401).body(Map.of("error", "手机号或密码错误"));
         }
-        return ResponseEntity.ok(Map.of(
-                "token", result.token(),
-                "username", result.username(),
-                "name", result.name(),
-                "position", result.position(),
-                "roles", result.roles(),
-                "authorities", result.authorities()));
+        // 用 LinkedHashMap(允许 null 值):患者/C 端无 staff 行时 department 为 null,
+        // 而 Map.of 不允许 null,会抛 NPE。
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("token", result.token());
+        body.put("username", result.username());
+        body.put("name", result.name());
+        body.put("position", result.position());
+        body.put("department", result.department());
+        body.put("departmentId", result.departmentId());
+        body.put("roles", result.roles());
+        body.put("authorities", result.authorities());
+        return ResponseEntity.ok(body);
     }
 }

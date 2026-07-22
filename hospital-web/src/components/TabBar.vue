@@ -73,10 +73,10 @@ function onCloseAll() {
 .tab-bar {
   display: flex;
   align-items: stretch;
-  background: #fff;
-  border-bottom: 1px solid #e5e5e7;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
   height: 40px;
-  padding: 0 4px 0 8px;
+  padding: 0 var(--sp-1) 0 var(--sp-2);
 }
 .tabs-scroll {
   flex: 1;
@@ -90,31 +90,31 @@ function onCloseAll() {
   height: 4px;
 }
 .tabs-scroll::-webkit-scrollbar-thumb {
-  background: #d6d7db;
-  border-radius: 2px;
+  background: var(--slate-300);
+  border-radius: var(--radius-sm);
 }
 .tab {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 0 8px 0 14px;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-2) 0 var(--sp-4);
   height: 40px;
-  border-right: 1px solid #f0f0f2;
-  color: #5b5f66;
-  font-size: 13px;
+  border-right: 1px solid var(--border-light);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
   cursor: pointer;
   white-space: nowrap;
   position: relative;
   user-select: none;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 .tab:hover {
-  background: #f5f6f8;
+  background: var(--bg-muted);
 }
 .tab.active {
-  color: #2c6bed;
-  background: #f5f5f7;
+  color: var(--brand);
+  background: var(--brand-subtle);
 }
 .tab.active::after {
   content: '';
@@ -123,7 +123,7 @@ function onCloseAll() {
   right: 0;
   bottom: 0;
   height: 2px;
-  background: #2c6bed;
+  background: var(--brand);
 }
 .tab-title {
   max-width: 200px;
@@ -131,26 +131,26 @@ function onCloseAll() {
   text-overflow: ellipsis;
 }
 .tab-close {
-  font-size: 12px;
-  border-radius: 50%;
+  font-size: var(--fs-xs);
+  border-radius: var(--radius-full);
   padding: 2px;
   opacity: 0.45;
-  transition: opacity 0.15s ease, background 0.15s ease;
+  transition: opacity var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
 }
 .tab-close:hover {
   opacity: 1;
-  background: #e3e4e8;
+  background: var(--slate-200);
 }
 .tab-actions {
   display: flex;
   align-items: center;
-  padding-left: 6px;
-  border-left: 1px solid #f0f0f2;
+  padding-left: var(--sp-2);
+  border-left: 1px solid var(--border-light);
 }
 .more-btn {
-  color: #5b5f66;
+  color: var(--text-secondary);
 }
 .dd-text {
-  margin-left: 6px;
+  margin-left: var(--sp-2);
 }
 </style>

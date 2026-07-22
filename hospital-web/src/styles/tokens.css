@@ -1,0 +1,149 @@
+/**
+ * 设计令牌（Design Tokens）—— 全站样式的唯一事实源
+ * ===================================================
+ * 风格：临床蓝 + 琥珀强调，数据密集型后台（Data-Dense Dashboard）
+ * 约定：业务视图一律引用这里的 CSS 变量，禁止再写死色值/尺寸。
+ *      换肤 / 主题微调只改本文件；Element Plus 组件由 element.css 承接。
+ */
+
+:root {
+  /* ---------- 品牌色阶：临床蓝（blue） ---------- */
+  --brand-50:  #eff6ff;
+  --brand-100: #dbeafe;
+  --brand-200: #bfdbfe;
+  --brand-300: #93c5fd;
+  --brand-400: #60a5fa;
+  --brand-500: #3b82f6;
+  --brand-600: #2563eb;
+  --brand-700: #1d4ed8;
+  --brand-800: #1e40af; /* 主色 */
+  --brand-900: #1e3a8a;
+
+  --brand:          var(--brand-800);
+  --brand-hover:    var(--brand-900);
+  --brand-active:   var(--brand-900);
+  --brand-subtle:   var(--brand-50);  /* 浅底/选中背景 */
+
+  /* ---------- 强调色：琥珀（amber，用于告警/高亮/CTA） ---------- */
+  --accent-500: #f59e0b;
+  --accent-600: #d97706;
+  --accent-subtle: #fef3e2;
+  --accent: var(--accent-500);
+
+  /* ---------- 语义色 ---------- */
+  --success:        #16a34a;
+  --success-subtle: #e9f6ee;
+  --warning:        #f59e0b;
+  --warning-subtle: #fef3e2;
+  --danger:         #dc2626;
+  --danger-subtle:  #fbeaea;
+  --info:           #64748b;
+  --info-subtle:    #f1f5f9;
+
+  /* ---------- 中性色阶：slate ---------- */
+  --slate-50:  #f8fafc;
+  --slate-100: #f1f5f9;
+  --slate-200: #e2e8f0;
+  --slate-300: #cbd5e1;
+  --slate-400: #94a3b8;
+  --slate-500: #64748b;
+  --slate-600: #475569;
+  --slate-700: #334155;
+  --slate-800: #1e293b;
+  --slate-900: #0f172a;
+
+  /* ---------- 背景 / 表面 ---------- */
+  --bg-page:     var(--slate-50);   /* 页面底 */
+  --bg-surface:  #ffffff;           /* 卡片/面板 */
+  --bg-muted:    var(--slate-100);  /* 次级填充/表头 */
+  --bg-overlay:  #ffffff;
+
+  /* ---------- 文本 ---------- */
+  --text-primary:     var(--slate-900);
+  --text-regular:     var(--slate-700);
+  --text-secondary:   var(--slate-500);
+  --text-placeholder: var(--slate-400);
+  --text-inverse:     #ffffff;
+
+  /* ---------- 边框 ---------- */
+  --border:        var(--slate-200);
+  --border-strong: var(--slate-300);
+  --border-light:  var(--slate-100);
+
+  /* ---------- 侧边栏（深色临床导航） ---------- */
+  --sidebar-bg:          #10203a;
+  --sidebar-bg-sub:      #0c1a30;
+  --sidebar-border:      #1e304d;
+  --sidebar-text:        #a9b6cc;
+  --sidebar-text-active: #ffffff;
+  --sidebar-hover-bg:    #1b2e4a;
+  --sidebar-active-bg:   var(--brand-600);
+
+  /* ---------- 叫号大屏（深色全屏展示板） ---------- */
+  --screen-bg:       #0c0c0e;
+  --screen-surface:  #16161a;
+  --screen-border:   #26262b;
+  --screen-text:     #f5f5f7;  /* 主文字 */
+  --screen-text-2:   #c8c8d0;  /* 次级亮字 */
+  --screen-text-3:   #b8b8c0;
+  --screen-muted:    #8a8a92;  /* 弱化文字 */
+  --screen-dim:      #6a6a72;
+  --screen-faint:    #5a5a62;  /* 最弱/空态 */
+
+  /* ---------- 间距（4px 基准） ---------- */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+
+  /* ---------- 圆角 ---------- */
+  --radius-sm:   4px;
+  --radius:      6px;
+  --radius-md:   8px;
+  --radius-lg:   12px;
+  --radius-full: 9999px;
+
+  /* ---------- 阴影（数据密集：克制、通透） ---------- */
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --shadow:    0 1px 3px rgba(15, 23, 42, 0.08), 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.08);
+  --shadow-lg: 0 8px 24px rgba(15, 23, 42, 0.12);
+
+  /* ---------- 字体 ---------- */
+  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', 'PingFang SC',
+    'Microsoft YaHei', 'Hiragino Sans GB', 'Noto Sans CJK SC', sans-serif;
+  /* 数据/数字专用等宽字体，配 tabular-nums 对齐 */
+  --font-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, 'SFMono-Regular',
+    Menlo, Consolas, 'Courier New', monospace;
+
+  /* 字号 */
+  --fs-xs:  12px;
+  --fs-sm:  13px;
+  --fs-base: 14px;
+  --fs-md:  15px;
+  --fs-lg:  16px;
+  --fs-xl:  18px;
+  --fs-2xl: 22px;
+  --fs-3xl: 28px;
+
+  /* 行高 / 字重 */
+  --lh-tight: 1.25;
+  --lh-base:  1.5;
+  --fw-medium:   500;
+  --fw-semibold: 600;
+  --fw-bold:     700;
+
+  /* ---------- 动效 ---------- */
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --dur-fast: 150ms;
+  --dur:      200ms;
+
+  /* ---------- 层级 ---------- */
+  --z-sticky:   100;
+  --z-dropdown: 1000;
+  --z-overlay:  2000;
+}

@@ -1,29 +1,33 @@
 package com.hospital.core.lab.application;
 
+import java.time.LocalDateTime;
+import java.util.List;
+
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.event.EventListener;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.hospital.core.clinical.application.ChargeService;
 import com.hospital.core.clinical.application.VisitService;
 import com.hospital.core.clinical.domain.Order;
+import com.hospital.core.clinical.domain.OrderUpdatedEvent;
+import com.hospital.core.clinical.domain.Visit;
 import com.hospital.core.clinical.infrastructure.OrderMapper;
+import com.hospital.core.clinical.infrastructure.VisitMapper;
 import com.hospital.core.lab.domain.LabRequisition;
 import com.hospital.core.lab.domain.LabResultItem;
 import com.hospital.core.lab.infrastructure.LabRequisitionMapper;
 import com.hospital.core.lab.infrastructure.LabResultItemMapper;
-import com.hospital.core.clinical.domain.Visit;
-import com.hospital.core.clinical.infrastructure.VisitMapper;
 import com.hospital.core.org.application.StaffService;
 import com.hospital.core.patient.application.PatientService;
 import com.hospital.core.report.application.ReportService;
 import com.hospital.core.report.domain.Report;
 import com.hospital.core.report.domain.ReportPdfEvent;
-import lombok.RequiredArgsConstructor;
-import lombok.Data;
-import org.springframework.context.ApplicationEventPublisher;
-import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
-import java.time.LocalDateTime;
-import java.util.List;
+import lombok.Data;
+import lombok.RequiredArgsConstructor;
 
 /**
  * 医技应用服务:检验申请创建 → 结果录入闭环。
@@ -45,19 +49,27 @@ public class LabService {
     private final PatientService patientService;
     private final StaffService staffService;
 
+    /**
+     * 监听临床医嘱修改事件:同步更新对应 PENDING 检验明细的项目名称快照。
+     * 医生二次修改检验医嘱后,检验申请明细随之更新,避免录入结果时仍显示旧名称。
+     * 同步执行,与 editOrder 处于同一事务;已完成(COMPLETED)/已取消明细不受影响。
+     */
+    @EventListener
+    public void onOrderUpdated(OrderUpdatedEvent event) {
+        List<LabResultItem> items = resultItemMapper.selectList(
+                new LambdaQueryWrapper<LabResultItem>()
+                        .eq(LabResultItem::getOrderId, event.orderId())
+                        .eq(LabResultItem::getStatus, "PENDING"));
+        for (LabResultItem item : items) {
+            item.setItemName(event.itemName());
+            resultItemMapper.updateById(item);
+        }
+    }
+
     @Transactional
     public LabRequisition createFromVisit(Long visitId, Long doctorId, List<Long> orderIds) {
         Visit visit = visitMapper.selectById(visitId);
         if (visit == null) throw new IllegalArgumentException("就诊不存在:" + visitId);
-
-        // 防重复:该就诊已有 PENDING 检验申请则拒绝
-        Long existCount = requisitionMapper.selectCount(
-                new LambdaQueryWrapper<LabRequisition>()
-                        .eq(LabRequisition::getVisitId, visitId)
-                        .eq(LabRequisition::getStatus, "PENDING"));
-        if (existCount > 0) {
-            throw new IllegalStateException("该就诊已有待处理的检验申请，请勿重复创建");
-        }
 
         LambdaQueryWrapper<Order> q = new LambdaQueryWrapper<Order>()
                 .eq(Order::getVisitId, visitId)
@@ -67,6 +79,39 @@ public class LabService {
             q.in(Order::getId, orderIds);
         }
         List<Order> labOrders = orderMapper.selectList(q);
+
+        // 查找已有的 PENDING 检验申请
+        LabRequisition existingPending = requisitionMapper.selectOne(
+                new LambdaQueryWrapper<LabRequisition>()
+                        .eq(LabRequisition::getVisitId, visitId)
+                        .eq(LabRequisition::getStatus, "PENDING"));
+
+        if (existingPending != null) {
+            // 已有 PENDING 申请:找出尚未纳入的新检验医嘱,追加到现有申请
+            List<Long> existingOrderIds = resultItemMapper.selectList(
+                    new LambdaQueryWrapper<LabResultItem>()
+                            .eq(LabResultItem::getRequisitionId, existingPending.getId()))
+                    .stream().map(LabResultItem::getOrderId).toList();
+
+            List<Order> newOrders = labOrders.stream()
+                    .filter(o -> !existingOrderIds.contains(o.getId()))
+                    .toList();
+
+            if (newOrders.isEmpty()) {
+                throw new IllegalStateException("该就诊无可追加的检验医嘱");
+            }
+
+            for (Order o : newOrders) {
+                LabResultItem item = new LabResultItem();
+                item.setRequisitionId(existingPending.getId());
+                item.setOrderId(o.getId());
+                item.setItemName(o.getItemName());
+                item.setStatus("PENDING");
+                resultItemMapper.insert(item);
+            }
+            return existingPending;
+        }
+
         if (labOrders.isEmpty()) {
             throw new IllegalStateException("该就诊无可创建的检验医嘱");
         }
@@ -74,10 +119,15 @@ public class LabService {
         // 确单:锁定就诊单,此后不可再追加/修改/取消医嘱
         visitService.confirm(visitId);
 
+        // 医生以就诊单为准(确单时若未指定会回填当前操作医生),传参仅兜底
+        Visit confirmedVisit = visitMapper.selectById(visitId);
+        Long effectiveDoctorId = (confirmedVisit != null && confirmedVisit.getDoctorId() != null)
+                ? confirmedVisit.getDoctorId() : doctorId;
+
         LabRequisition req = new LabRequisition();
         req.setVisitId(visitId);
         req.setPatientId(visit.getPatientId());
-        req.setDoctorId(doctorId);
+        req.setDoctorId(effectiveDoctorId);
         req.setStatus("PENDING");
         req.setCreatedAt(LocalDateTime.now());
         requisitionMapper.insert(req);
@@ -113,7 +163,8 @@ public class LabService {
             item.setResultValue(entry.getResultValue());
             item.setUnit(entry.getUnit());
             item.setRefRange(entry.getRefRange());
-            item.setAbnormalFlag(entry.getAbnormalFlag());
+            // 自动判定异常方向,忽略前端传入的 abnormalFlag
+            item.setAbnormalFlag(autoDetectAbnormalFlag(entry.getResultValue(), entry.getRefRange()));
             item.setStatus("COMPLETED");
             resultItemMapper.updateById(item);
 
@@ -134,18 +185,30 @@ public class LabService {
         requisitionMapper.updateById(req);
 
         // 结果录入完成后自动生成报告(并异步生成 PDF,与 C 端体检报告一致)
-        String itemsSummary = entries.stream().map(e -> {
-            LabResultItem item = resultItemMapper.selectById(e.getItemId());
-            return item != null ? item.getItemName() + "=" + e.getResultValue() : "";
-        }).filter(s -> !s.isEmpty()).reduce((a, b) -> a + "; " + b).orElse("");
+        StringBuilder content = new StringBuilder();
+        content.append("检验申请 #").append(req.getId()).append("\n");
+        content.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+        for (ResultEntry entry : entries) {
+            LabResultItem item = resultItemMapper.selectById(entry.getItemId());
+            if (item == null) continue;
+            content.append("【").append(item.getItemName()).append("】\n");
+            content.append("  结果: ").append(entry.getResultValue());
+            if (entry.getUnit() != null && !entry.getUnit().isBlank()) {
+                content.append(" ").append(entry.getUnit());
+            }
+            content.append("\n");
+            if (entry.getRefRange() != null && !entry.getRefRange().isBlank()) {
+                content.append("  参考范围: ").append(entry.getRefRange()).append("\n");
+            }
+            String flag = item.getAbnormalFlag();
+            String symbol = "HIGH".equals(flag) ? "偏高 ↑" : "LOW".equals(flag) ? "偏低 ↓" : "正常";
+            content.append("  判定: ").append(symbol).append("\n");
+        }
         Report report = reportService.createAndPublish(req.getVisitId(), req.getPatientId(), "LAB",
                 "检验报告-" + req.getId(),
-                "申请 #" + req.getId() + " 检验结果：" + itemsSummary,
+                content.toString(),
                 req.getTechnicianId());
         eventPublisher.publishEvent(new ReportPdfEvent(report.getId(), report.getPatientId(), report.getTitle(), report.getContent()));
-
-        // 所有医嘱执行完 → 自动完成就诊单
-        visitService.tryAutoFinish(req.getVisitId());
 
         return req;
     }
@@ -177,11 +240,38 @@ public class LabService {
         return requisitionMapper.selectList(q);
     }
 
+    /** 检查当前用户科室是否有权访问该检验申请(申请中任一医嘱的执行科室匹配即可) */
+    public boolean hasAccessToRequisition(Long requisitionId, Long deptId) {
+        List<LabResultItem> items = resultItemMapper.selectList(
+                new LambdaQueryWrapper<LabResultItem>()
+                        .eq(LabResultItem::getRequisitionId, requisitionId));
+        return items.stream().anyMatch(item -> {
+            if (item.getOrderId() == null) return false;
+            Order order = orderMapper.selectById(item.getOrderId());
+            return order != null && deptId.equals(order.getExecutionDeptId());
+        });
+    }
+
     /**
-     * 检验申请列表(含患者/医生名称)
+     * 检验申请列表(含患者/医生名称),可按状态筛选、按科室过滤。
      */
-    public List<LabRequisitionListItem> listWithDetail(String status) {
+    public List<LabRequisitionListItem> listWithDetail(String status, Long deptId) {
         List<LabRequisition> requisitions = list(status);
+
+        // 按科室过滤:只返回执行科室为当前科室的申请
+        if (deptId != null) {
+            requisitions = requisitions.stream().filter(req -> {
+                List<LabResultItem> items = resultItemMapper.selectList(
+                        new LambdaQueryWrapper<LabResultItem>()
+                                .eq(LabResultItem::getRequisitionId, req.getId()));
+                return items.stream().anyMatch(item -> {
+                    if (item.getOrderId() == null) return false;
+                    Order order = orderMapper.selectById(item.getOrderId());
+                    return order != null && deptId.equals(order.getExecutionDeptId());
+                });
+            }).toList();
+        }
+
         return requisitions.stream().map(req -> {
             LabRequisitionListItem item = new LabRequisitionListItem();
             item.setId(req.getId());
@@ -202,9 +292,17 @@ public class LabService {
                 item.setPatientName(null);
             }
 
-            // 解析医生名称
+            // 解析医生名称:申请单未记录医生时回退到就诊单医生(历史数据兜底)
+            Long doctorId = req.getDoctorId();
+            if (doctorId == null && req.getVisitId() != null) {
+                var v = visitMapper.selectById(req.getVisitId());
+                if (v != null) {
+                    doctorId = v.getDoctorId();
+                }
+            }
+            item.setDoctorId(doctorId);
             try {
-                var doctor = staffService.get(req.getDoctorId());
+                var doctor = staffService.get(doctorId);
                 item.setDoctorName(doctor != null ? doctor.getName() : null);
             } catch (Exception e) {
                 item.setDoctorName(null);
@@ -230,5 +328,29 @@ public class LabService {
         private String unit;
         private String refRange;
         private String abnormalFlag;
+    }
+
+    /**
+     * 根据结果值和参考范围自动判定异常方向。
+     * 参考范围格式: "120-160" 或 "4.0-10.0"
+     * @return NORMAL / HIGH / LOW
+     */
+    static String autoDetectAbnormalFlag(String resultValue, String refRange) {
+        if (resultValue == null || resultValue.isBlank() || refRange == null || refRange.isBlank()) {
+            return "NORMAL";
+        }
+        try {
+            double value = Double.parseDouble(resultValue.trim());
+            // 支持 "120-160" 和 "120~160" 两种分隔符
+            String[] parts = refRange.split("[-~]");
+            if (parts.length != 2) return "NORMAL";
+            double min = Double.parseDouble(parts[0].trim());
+            double max = Double.parseDouble(parts[1].trim());
+            if (value > max) return "HIGH";
+            if (value < min) return "LOW";
+            return "NORMAL";
+        } catch (NumberFormatException e) {
+            return "NORMAL";
+        }
     }
 }

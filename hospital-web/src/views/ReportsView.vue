@@ -136,15 +136,15 @@ onActivated(fetchList)
 </template>
 
 <style scoped>
-.toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 8px; }
-.toolbar h2 { margin: 0; font-size: 18px; }
-.toolbar-right { display: flex; align-items: center; gap: 8px; }
-.stats { font-size: 13px; color: #666; }
-.report-content { margin-top: 16px; }
-.report-content h4 { margin: 0 0 8px; font-size: 14px; }
+.toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--sp-4); flex-wrap: wrap; gap: var(--sp-2); }
+.toolbar h2 { margin: 0; font-size: var(--fs-xl); }
+.toolbar-right { display: flex; align-items: center; gap: var(--sp-2); }
+.stats { font-size: var(--fs-sm); color: var(--text-regular); }
+.report-content { margin-top: var(--sp-4); }
+.report-content h4 { margin: 0 0 var(--sp-2); font-size: var(--fs-base); }
 .content-body {
-  background: #f5f7fa; padding: 12px; border-radius: 4px;
-  white-space: pre-wrap; font-size: 13px; line-height: 1.6;
+  background: var(--slate-100); padding: var(--sp-3); border-radius: var(--radius-sm);
+  white-space: pre-wrap; font-size: var(--fs-sm); line-height: 1.6;
   max-height: 300px; overflow-y: auto;
 }
 </style>

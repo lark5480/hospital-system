@@ -5,6 +5,8 @@ export interface LoginResponse {
   username: string
   name: string
   position: string
+  department?: string | null
+  departmentId?: number | null
   roles: string[]
   authorities: string[]
 }

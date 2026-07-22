@@ -3,7 +3,7 @@ package com.hospital.core.clinical.application;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 
-/** 待执行检查 VO。 */
+/** 检查任务 VO(待执行/已完成)。 */
 @Data
 @AllArgsConstructor
 public class ExamTaskVO {
@@ -12,4 +12,6 @@ public class ExamTaskVO {
     private String patientName;
     private String doctorName;
     private String itemName;
+    private String status;
+    private String finding;
 }

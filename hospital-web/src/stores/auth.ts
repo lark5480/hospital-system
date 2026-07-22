@@ -20,6 +20,8 @@ export const useAuthStore = defineStore('auth', () => {
   const authenticated = ref(false)
   const username = ref('')
   const name = ref('')
+  const department = ref<string | null>(null)
+  const departmentId = ref<number | null>(null)
   const roles = ref<string[]>([])
   const authorities = ref<string[]>([])
   const token = ref<string | undefined>(undefined)
@@ -55,6 +57,8 @@ export const useAuthStore = defineStore('auth', () => {
       token.value = s.token
       username.value = s.username
       name.value = s.name ?? ''
+      department.value = s.department ?? null
+      departmentId.value = s.departmentId ?? null
       roles.value = s.roles ?? []
       authorities.value = s.authorities ?? []
       authenticated.value = true
@@ -71,6 +75,8 @@ export const useAuthStore = defineStore('auth', () => {
         token: token.value,
         username: username.value,
         name: name.value,
+        department: department.value,
+        departmentId: departmentId.value,
         roles: roles.value,
         authorities: authorities.value
       })
@@ -90,6 +96,8 @@ export const useAuthStore = defineStore('auth', () => {
     token.value = res.token
     username.value = res.username
     name.value = res.name
+    department.value = res.department ?? null
+    departmentId.value = res.departmentId ?? null
     roles.value = res.roles
     authorities.value = res.authorities
     authenticated.value = true
@@ -120,6 +128,8 @@ export const useAuthStore = defineStore('auth', () => {
     token.value = undefined
     roles.value = []
     authorities.value = []
+    department.value = null
+    departmentId.value = null
     clearPersisted()
     router?.push('/login')
   }
@@ -129,7 +139,7 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   return {
-    enabled, ready, authenticated, username, name, roles, authorities, token,
+    enabled, ready, authenticated, username, name, department, departmentId, roles, authorities, token,
     init, login, logout, hasAuthority, switchRole, doLogin
   }
 })

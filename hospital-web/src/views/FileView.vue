@@ -117,8 +117,8 @@ onMounted(loadReportFiles)
 </template>
 
 <style scoped>
-.toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
-.toolbar h2 { margin: 0; font-size: 18px; }
-.toolbar h3 { margin: 0; font-size: 15px; color: #2c6bed; }
-.hint { margin-bottom: 4px; }
+.toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--sp-4); }
+.toolbar h2 { margin: 0; font-size: var(--fs-xl); }
+.toolbar h3 { margin: 0; font-size: var(--fs-md); color: var(--brand); }
+.hint { margin-bottom: var(--sp-1); }
 </style>

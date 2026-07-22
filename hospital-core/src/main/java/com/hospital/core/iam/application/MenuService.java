@@ -1,21 +1,23 @@
-package com.hospital.core.iam;
-
-import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
-import com.hospital.core.iam.domain.Menu;
-import com.hospital.core.iam.infrastructure.MenuAuthorityMapper;
-import com.hospital.core.iam.infrastructure.MenuMapper;
-import lombok.RequiredArgsConstructor;
-import org.springframework.security.authentication.AnonymousAuthenticationToken;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.GrantedAuthority;
-import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.stereotype.Service;
+package com.hospital.core.iam.application;
 
 import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
+
+import org.springframework.security.authentication.AnonymousAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.stereotype.Service;
+
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.hospital.core.iam.domain.Menu;
+import com.hospital.core.iam.infrastructure.MenuAuthorityMapper;
+import com.hospital.core.iam.infrastructure.MenuMapper;
+
+import lombok.RequiredArgsConstructor;
 
 /**
  * 菜单裁剪服务:按当前登录用户持有的 authorities 过滤数据库中的导航树。

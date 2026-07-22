@@ -8,11 +8,10 @@ import { hasAuthority } from '@/stores/auth'
 import { searchPatients, registerPatient } from '@/api/patient'
 import { getCurrentStaff, listStaff } from '@/api/org'
 import { listDepartments } from '@/api/org'
-import { listReportsByPatient } from '@/api/report'
+import { getPatientHistory, type PatientVisitHistory } from '@/api/visit'
 import type { VisitCreatePayload, VisitStatus } from '@/types/visit'
 import type { Patient } from '@/types/patient'
 import type { Staff, Department } from '@/types/org'
-import type { ReportDetail } from '@/types/report'
 
 const router = useRouter()
 const store = useVisitStore()
@@ -143,7 +142,7 @@ function selectPatient(patient: Patient) {
   form.patientId = patient.id
   searchKeyword.value = `${patient.name} (${patient.phone})`
   searchResults.value = []
-  loadHistoryReports(patient.id)
+  loadPatientVisitHistory(patient.id)
 }
 
 function clearPatient() {
@@ -151,21 +150,19 @@ function clearPatient() {
   form.patientId = 0
   searchKeyword.value = ''
   searchResults.value = []
-  historyReports.value = []
+  patientVisitHistory.value = []
 }
 
-// 加载该患者已发布的检验/检查历史报告
-async function loadHistoryReports(patientId: number) {
-  historyLoading.value = true
+// 加载患者历史就诊记录(含医嘱)
+const patientVisitHistory = ref<PatientVisitHistory[]>([])
+const patientHistoryLoading = ref(false)
+
+async function loadPatientVisitHistory(patientId: number) {
+  patientHistoryLoading.value = true
   try {
-    historyReports.value = await listReportsByPatient(patientId)
-  } catch { historyReports.value = [] }
-  finally { historyLoading.value = false }
-}
-
-function viewHistoryReport(report: ReportDetail) {
-  selectedHistoryReport.value = report
-  historyDetailDialog.value = true
+    patientVisitHistory.value = await getPatientHistory(patientId)
+  } catch { patientVisitHistory.value = [] }
+  finally { patientHistoryLoading.value = false }
 }
 
 // ---- 新建患者 ----
@@ -218,10 +215,6 @@ const statusMeta: Record<VisitStatus, { text: string; type: '' | 'success' | 'wa
 }
 
 // ---- 患者历史报告(检验/检查) ----
-const historyReports = ref<ReportDetail[]>([])
-const historyLoading = ref(false)
-const historyDetailDialog = ref(false)
-const selectedHistoryReport = ref<ReportDetail | null>(null)
 function goDetail(id: number) {
   router.push(`/visits/${id}`)
 }
@@ -435,54 +428,47 @@ onBeforeUnmount(removePositionListeners)
             placeholder="例如:发热 38.5℃,咳嗽"
           />
         </el-form-item>
-        <!-- 该患者历史检验/检查报告 -->
-        <el-form-item v-if="selectedPatient" label="历史报告">
+        <!-- 该患者历史就诊记录(含医嘱+检验报告) -->
+        <el-form-item v-if="selectedPatient" label="就诊记录">
           <div style="width:100%">
-            <el-button text type="primary" size="small" :loading="historyLoading">
-              该患者历史报告 ({{ historyReports.length }})
-            </el-button>
-            <el-tag v-if="!historyLoading && historyReports.length === 0" size="small" type="info" style="margin-left:8px">暂无历史报告</el-tag>
-            <el-table v-else :data="historyReports" size="small" border style="margin-top:8px" max-height="200">
-              <el-table-column label="类型" width="70">
-                <template #default="{ row }">{{ row.type === 'LAB' ? '检验' : '检查' }}</template>
-              </el-table-column>
-              <el-table-column prop="title" label="标题" min-width="140" show-overflow-tooltip />
-              <el-table-column label="发布时间" width="150">
-                <template #default="{ row }">{{ row.publishedAt || row.createdAt }}</template>
-              </el-table-column>
-              <el-table-column label="操作" width="60">
-                <template #default="{ row }">
-                  <el-button type="primary" link size="small" @click="viewHistoryReport(row)">查看</el-button>
-                </template>
-              </el-table-column>
-            </el-table>
+            <el-tag v-if="!patientHistoryLoading && patientVisitHistory.length === 0" size="small" type="info">暂无历史就诊</el-tag>
+            <div v-else v-loading="patientHistoryLoading" style="max-height:300px;overflow-y:auto">
+              <div v-for="vh in patientVisitHistory" :key="vh.visitId"
+                style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px;margin-bottom:var(--sp-2);font-size:var(--fs-sm)">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+                  <span>
+                    <strong>就诊 #{{ vh.visitId }}</strong>
+                    <el-tag size="small" style="margin-left:6px"
+                      :type="vh.status === 'FINISHED' ? 'success' : vh.status === 'CREATED' ? 'info' : ''">
+                      {{ vh.status === 'FINISHED' ? '已完成' : vh.status === 'CREATED' ? '草稿' : vh.status }}
+                    </el-tag>
+                  </span>
+                  <span style="color:var(--text-secondary)">{{ vh.visitTime }}</span>
+                </div>
+                <div style="color:var(--text-regular);margin-bottom:4px">主诉: {{ vh.chiefComplaint || '-' }}</div>
+                <div style="color:var(--text-secondary);margin-bottom:6px">{{ vh.deptName || '' }} {{ vh.doctorName || '' }}</div>
+                <!-- 医嘱列表 -->
+                <div v-if="vh.orders.length > 0" style="background:var(--slate-100);border-radius:var(--radius-sm);padding:6px 8px">
+                  <div v-for="o in vh.orders" :key="o.orderId" style="display:flex;align-items:center;gap:8px;padding:2px 0">
+                    <el-tag size="small" :type="o.type === 'EXAM' ? 'warning' : o.type === 'LAB' ? '' : 'success'">
+                      {{ o.type === 'EXAM' ? '检查' : o.type === 'LAB' ? '检验' : '药品' }}
+                    </el-tag>
+                    <span>{{ o.itemName }}</span>
+                    <el-tag v-if="o.status === 'EXECUTED'" size="small" type="success">已执行</el-tag>
+                    <el-tag v-else-if="o.status === 'CREATED'" size="small" type="info">未执行</el-tag>
+                    <!-- 检查所见 -->
+                    <span v-if="o.finding" style="color:var(--warning);font-size:var(--fs-xs);margin-left:auto;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                      :title="o.finding">所见: {{ o.finding }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
         <el-button type="primary" :disabled="!selectedPatient || !form.deptId || !form.doctorId" :loading="submitting" @click="submit">提交</el-button>
-      </template>
-    </el-dialog>
-
-    <!-- 历史报告详情对话框 -->
-    <el-dialog v-model="historyDetailDialog" title="历史报告详情" width="600px">
-      <template v-if="selectedHistoryReport">
-        <el-descriptions border :column="2">
-          <el-descriptions-item label="标题">{{ selectedHistoryReport.title }}</el-descriptions-item>
-          <el-descriptions-item label="类型">{{ selectedHistoryReport.type === 'LAB' ? '检验' : '检查' }}</el-descriptions-item>
-          <el-descriptions-item label="患者">{{ selectedHistoryReport.patientName || selectedHistoryReport.patientId }}</el-descriptions-item>
-          <el-descriptions-item label="发布时间">{{ selectedHistoryReport.publishedAt || selectedHistoryReport.createdAt }}</el-descriptions-item>
-        </el-descriptions>
-        <div style="margin-top:16px">
-          <h4 style="margin:0 0 8px;font-size:14px">报告内容</h4>
-          <div style="background:#f5f7fa;padding:12px;border-radius:4px;white-space:pre-wrap;font-size:13px;line-height:1.6;max-height:260px;overflow-y:auto">
-            {{ selectedHistoryReport.content || '(无内容)' }}
-          </div>
-        </div>
-      </template>
-      <template #footer>
-        <el-button @click="historyDetailDialog = false">关闭</el-button>
       </template>
     </el-dialog>
 
@@ -519,43 +505,43 @@ onBeforeUnmount(removePositionListeners)
 .toolbar-left {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
 }
 .toolbar h2 {
   margin: 0;
-  font-size: 18px;
+  font-size: var(--fs-xl);
 }
 .patient-select {
   position: relative;
   width: 100%;
 }
 .search-dropdown {
-  background: #fff;
-  border: 1px solid #dcdfe6;
-  border-radius: 4px;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lg);
   max-height: 200px;
   overflow-y: auto;
 }
 .search-item {
   display: flex;
   justify-content: space-between;
-  padding: 8px 12px;
+  padding: var(--sp-2) var(--sp-3);
   cursor: pointer;
-  font-size: 14px;
+  font-size: var(--fs-base);
 }
 .search-item:hover {
-  background: #f5f7fa;
+  background: var(--slate-100);
 }
 .search-item-name {
-  font-weight: 500;
+  font-weight: var(--fw-medium);
 }
 .search-item-phone {
-  color: #909399;
+  color: var(--text-secondary);
 }
 .search-hint {
-  padding: 8px 12px;
-  color: #909399;
-  font-size: 13px;
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
 }
 </style>

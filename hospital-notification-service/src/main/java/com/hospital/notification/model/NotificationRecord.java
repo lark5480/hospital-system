@@ -15,6 +15,8 @@ public record NotificationRecord(
         LocalDateTime eventTime,
         LocalDateTime receivedAt,
         String channel,
-        String content
+        String content,
+        String targetRole,
+        Long targetDeptId
 ) {
 }
