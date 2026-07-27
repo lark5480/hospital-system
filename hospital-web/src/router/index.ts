@@ -41,7 +41,7 @@ const router = createRouter({
         { path: 'notifications', name: 'notifications', component: NotificationView, meta: { title: '消息通知' } },
         { path: 'files', name: 'files', component: FileView, meta: { title: '文件管理' } },
         { path: 'patient/booking', name: 'patient-booking', component: PatientBookingView, meta: { title: '套餐预约' } },
-        { path: 'patient/registration', name: 'patient-registration', component: () => import('@/views/PatientRegistrationView.vue'), meta: { title: '门诊挂号' } },
+        { path: 'patient/registration', name: 'patient-registration', component: () => import('@/views/PatientRegistrationView.vue'), meta: { title: '自助挂号' } },
         { path: 'patient/appointments', name: 'patient-appointments', component: PatientAppointmentsView, meta: { title: '我的预约' } },
         { path: 'patient/my-queue', name: 'patient-myqueue', component: PatientMyQueueView, meta: { title: '我的排队' } },
         { path: 'patients', name: 'patients', component: PatientsView, meta: { title: '患者管理' } },

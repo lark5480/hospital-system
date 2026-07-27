@@ -16,13 +16,13 @@ public class DepartmentController {
     private final DepartmentService departmentService;
 
     @GetMapping("/api/core/org/departments/list")
-    @PreAuthorize("hasAuthority('visit:entry')")
+    @PreAuthorize("hasAnyAuthority('visit:entry', 'patient:booking')")
     public ResponseEntity<List<Department>> list() {
         return ResponseEntity.ok(departmentService.list());
     }
 
     @GetMapping("/api/core/org/departments/{id}")
-    @PreAuthorize("hasAuthority('visit:entry')")
+    @PreAuthorize("hasAnyAuthority('visit:entry', 'patient:booking')")
     public ResponseEntity<Department> get(@PathVariable Long id) {
         Department dept = departmentService.get(id);
         if (dept == null) return ResponseEntity.notFound().build();

@@ -32,9 +32,6 @@ npm install
 npm run dev              # :5173，经 Vite 代理转发至网关
 npm run build            # 类型检查 + 生产构建
 npm run type-check       # 仅做 vue-tsc 类型检查
-
-# 生产登录态（可选，默认 dev 模式直连）
-echo "VITE_AUTH_ENABLED=true" > hospital-web/.env.local
 ```
 
 ## 项目架构
@@ -143,8 +140,7 @@ ORM：MyBatis-Plus 3.5.7，`@TableName("schema.table")`，`map-underscore-to-cam
 - **统一账号表：** `platform.sys_user`（phone 唯一 + BCrypt 密码）、`platform.sys_user_role`（user_id × role_code 多对多）
 - **多角色权限并集：** 登录后 JWT 含 roles（多角色）+ authorities（七权并集），菜单 = 并集可见
 - 七权 RBAC：`visit:entry` / `visit:audit` / `order:execute` / `pharmacy:dispense` / `charge:pay` / `system:admin` / `patient:booking`
-- 默认关闭：后端以 dev 模式运行（doctor01 自动登录）
-- 启用方式：`VITE_AUTH_ENABLED=true`（前端 `.env.local`）
+- 登录方式：统一真登录（手机号 + 密码），无 dev 模拟登录开关，未登录由路由守卫跳 `/login`
 - 后端：控制器方法上标注 `@PreAuthorize("hasAuthority('...')")`
 - 前端：登录页（`/login` 独立路由）+ 右上角下拉（修改密码，改完强制重登）
 
@@ -203,7 +199,7 @@ Vue 3 + TypeScript + Vite 5 单页应用，配 Element Plus：
 - **路由：** 挂在 MainLayout 下的嵌套路由，25 个视图，`meta.requiresAuth` + 全局守卫
 - **状态：** 按业务域拆分的 Pinia store（`auth`、`visit`、`notification`、`dispatch`、`menu`、`patient`）
 - **接口：** `api/http.ts` 中的 Axios 实例（带 Bearer 令牌拦截器），按业务域划分的 API 模块
-- **认证：** `VITE_AUTH_ENABLED=true` 时走自管 JWT 登录；关闭时以模拟用户携带全部 authorities
+- **认证：** 统一自管 JWT 真登录（手机号 + 密码），登录态持久化到 localStorage，刷新免登
 
 ### 测试约定
 

@@ -1,11 +1,12 @@
 package com.hospital.core.report.domain;
 
+import java.time.LocalDateTime;
+
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
-import lombok.Data;
 
-import java.time.LocalDateTime;
+import lombok.Data;
 
 /**
  * 报告聚合根。
@@ -23,6 +24,9 @@ public class Report {
 
     /** 患者ID(供C端按患者查报告,不与visit绑定) */
     private Long patientId;
+
+    /** 关联体检预约ID(EXAM 报告溯源,防止同一预约重复出报告) */
+    private Long appointmentId;
 
     /** 类型:LAB(检验报告) / EXAM(检查报告) / CLINICAL(门诊病历) */
     private String type;

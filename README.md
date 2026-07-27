@@ -108,16 +108,9 @@ cd hospital-web
 npm install && npm run dev              # :5173
 ```
 
-### 认证模式(可选)
+### 认证模式
 
-默认 dev 态零配置可跑(前端自动以 doctor01 模拟登录)。生产态启用真登录(手机号 + 密码):
-
-```bash
-# 前端开启认证
-cd hospital-web
-echo "VITE_AUTH_ENABLED=true" > .env.local
-npm run dev
-```
+统一真登录(手机号 + 密码,自管 JWT),无需额外配置;启动后访问页面会自动跳转登录页,用下表测试账号登录即可。
 
 ### 测试账号(统一账号:手机号 + 密码,默认 123456)
 
@@ -143,7 +136,7 @@ npm run dev
 - **权限并集**:登录时取所有角色的 authority 并集,菜单 = 并集可见。
 - **后端鉴权**:`@PreAuthorize("hasAuthority('...')")` 标注在 controller 方法,由 `SecurityConfig` + `JwtAuthFilter` 统一收口。
 - **前端菜单**:菜单结构存储在 `platform.menu` + `platform.menu_authority` 表,`MenuService` 按当前用户 authorities 动态过滤。
-- **用户身份**:`CurrentUserResolver` 统一解析(从 SecurityContext 或 `X-Username` 开发 fallback)。
+- **用户身份**:`CurrentUserResolver` 统一解析(从 SecurityContext 取 JWT sub,即登录手机号)。
 
 ## 模块规则(ArchUnit 红线)
 
@@ -236,7 +229,7 @@ hospital-system/
 1. 先跑通后端,理解模块化单体 + 事件驱动 + Gateway + 前端衔接。
 2. 扩展 `clinical` 聚合(医嘱 / 收费 / 病历),利用单库事务。
 3. 前端加固状态管理(Pinia),把"就诊详情 / 报告"做成多 Tab 多步骤。
-4. 启用 `VITE_AUTH_ENABLED=true`,走自管 JWT 真登录(七权分立 RBAC)。
+4. 理解自管 JWT 真登录链路(手机号 + 密码,七权分立 RBAC)。
 5. 调度两个每日任务:`SlotGenerateJob`(号源生成) + `AppointmentCleanupJob`(过期清理)(Spring @Scheduled)。
 6. 扩展 `pharmacy` 模块,接入真实药品库存管理。
 7. 把 `notification` 升级为真实短信/邮件推送,利用跨服务事件。

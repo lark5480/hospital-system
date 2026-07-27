@@ -651,7 +651,7 @@ public class VisitService {
 
     /** 解析当前登录医生 ID(确单时回填接诊医生用);无法解析返回 null。 */
     private Long resolveCurrentDoctorId() {
-        String phone = CurrentUserResolver.resolveUsername(null);
+        String phone = CurrentUserResolver.resolveUsername();
         if (phone == null) return null;
         var staff = staffService.findByPhone(phone);
         return staff == null ? null : staff.getId();

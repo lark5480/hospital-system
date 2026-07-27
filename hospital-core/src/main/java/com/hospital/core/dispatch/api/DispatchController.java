@@ -6,14 +6,18 @@ import java.util.Map;
 
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
 
 import com.hospital.core.dispatch.application.DispatchService;
 import com.hospital.core.dispatch.domain.ExamTask;
 import com.hospital.core.dispatch.domain.QueueBoard;
 import com.hospital.core.patient.application.PatientService;
 import com.hospital.core.platform.security.CurrentUserResolver;
-import jakarta.servlet.http.HttpServletRequest;
 
 @RestController
 public class DispatchController {
@@ -27,8 +31,8 @@ public class DispatchController {
     }
 
     @GetMapping("/api/core/dispatch/my-queue")
-    public ResponseEntity<List<ExamTask>> myQueue(HttpServletRequest request) {
-        String username = CurrentUserResolver.resolveUsername(request);
+    public ResponseEntity<List<ExamTask>> myQueue() {
+        String username = CurrentUserResolver.resolveUsername();
         var patient = patientService.findByUsername(username);
         if (patient == null) return ResponseEntity.notFound().build();
         return ResponseEntity.ok(dispatchService.myQueue(patient.getId()));
@@ -72,6 +76,13 @@ public class DispatchController {
     @PostMapping("/api/core/dispatch/tasks/{id}/skip")
     public ResponseEntity<Void> skip(@PathVariable Long id) {
         dispatchService.skip(id);
+        return ResponseEntity.ok().build();
+    }
+
+    @PreAuthorize("hasAnyAuthority('visit:entry','visit:audit','order:execute','charge:pay','system:admin')")
+    @PostMapping("/api/core/dispatch/tasks/{id}/requeue")
+    public ResponseEntity<Void> requeue(@PathVariable Long id) {
+        dispatchService.requeue(id);
         return ResponseEntity.ok().build();
     }
 

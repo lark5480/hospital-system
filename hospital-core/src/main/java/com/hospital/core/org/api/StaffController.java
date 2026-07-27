@@ -1,15 +1,23 @@
 package com.hospital.core.org.api;
 
+import java.util.List;
+
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
 import com.hospital.core.org.application.StaffService;
 import com.hospital.core.org.domain.Staff;
 import com.hospital.core.platform.security.CurrentUserResolver;
-import jakarta.servlet.http.HttpServletRequest;
-import lombok.RequiredArgsConstructor;
-import org.springframework.http.ResponseEntity;
-import org.springframework.security.access.prepost.PreAuthorize;
-import org.springframework.web.bind.annotation.*;
 
-import java.util.List;
+import lombok.RequiredArgsConstructor;
 
 @RestController
 @RequiredArgsConstructor
@@ -19,8 +27,8 @@ public class StaffController {
 
     @GetMapping("/api/core/org/staff/me")
     @PreAuthorize("permitAll()")
-    public ResponseEntity<Staff> me(HttpServletRequest request) {
-        String phone = CurrentUserResolver.resolveUsername(request);
+    public ResponseEntity<Staff> me() {
+        String phone = CurrentUserResolver.resolveUsername();
         if (phone == null) return ResponseEntity.notFound().build();
         Staff staff = staffService.findByPhone(phone);
         if (staff == null) return ResponseEntity.notFound().build();

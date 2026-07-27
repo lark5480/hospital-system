@@ -1,9 +1,8 @@
+import * as authApi from '@/api/auth'
+import { useTabsStore } from '@/stores/tabs'
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import type { Router } from 'vue-router'
-import { AUTH_ENABLED } from '@/config/auth'
-import { useTabsStore } from '@/stores/tabs'
-import * as authApi from '@/api/auth'
 
 /** 认证持久化 key。刷新后凭此恢复登录态。 */
 const STORAGE_KEY = 'hospital_auth'
@@ -15,7 +14,6 @@ export function bindRouter(r: Router) {
 }
 
 export const useAuthStore = defineStore('auth', () => {
-  const enabled = ref(AUTH_ENABLED)
   const ready = ref(false)
   const authenticated = ref(false)
   const username = ref('')
@@ -27,24 +25,10 @@ export const useAuthStore = defineStore('auth', () => {
   const token = ref<string | undefined>(undefined)
 
   /**
-   * 初始化认证:
-   *   - dev 模式: 自动以 doctor01 登录。
-   *   - 生产模式: 不自动登录(让路由守卫跳转到 /login)。
+   * 初始化认证:从 localStorage 恢复登录态(刷新免登);无缓存则保持未登录,由路由守卫跳 /login。
    */
   async function init() {
-    if (!enabled.value) {
-      // dev 模式:优先走 localStorage 缓存的完整载荷恢复,避免重复调 API
-      const raw = localStorage.getItem(STORAGE_KEY)
-      if (raw) {
-        try { restoreFromStorage(); ready.value = true; return }
-        catch { /* fall through to auto login */ }
-      }
-      const devUser = localStorage.getItem('dev_username') || 'doctor01'
-      await doLogin(devUser, devUser)
-    } else {
-      // 生产模式:从 localStorage 恢复登录态,实现刷新免登
-      restoreFromStorage()
-    }
+    restoreFromStorage()
     ready.value = true
   }
 
@@ -104,22 +88,9 @@ export const useAuthStore = defineStore('auth', () => {
     persist()
   }
 
-  /** 切换角色(dev 模式):重新以新 username 登录。 */
-  async function switchRole(loginUsername: string) {
-    authenticated.value = false
-    await doLogin(loginUsername, loginUsername)
-  }
-
-  /**
-   * 登录入口:dev 模式弹 prompt,生产模式跳转登录页。
-   */
+  /** 登录入口:跳转登录页(手机号 + 密码)。 */
   function login() {
-    if (!enabled.value) {
-      const uname = prompt('登录用户名(dev 模式:doctor01/nurse01/pharmacist01/cashier01/admin01):', 'doctor01')
-      if (uname) switchRole(uname)
-    } else {
-      router?.push('/login')
-    }
+    router?.push('/login')
   }
 
   function logout() {
@@ -139,8 +110,8 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   return {
-    enabled, ready, authenticated, username, name, department, departmentId, roles, authorities, token,
-    init, login, logout, hasAuthority, switchRole, doLogin
+    ready, authenticated, username, name, department, departmentId, roles, authorities, token,
+    init, login, logout, hasAuthority, doLogin
   }
 })
 

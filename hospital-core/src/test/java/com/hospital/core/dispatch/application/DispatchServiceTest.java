@@ -152,16 +152,17 @@ class DispatchServiceTest {
         }
 
         @Test
-        @DisplayName("complete: IN_PROGRESS → DONE, 回填 doneAt, 同步看板")
+        @DisplayName("complete: IN_PROGRESS → DONE, 回填 doneAt, 同步看板, 全部终态→出报告")
         void complete_success() {
             var t = pendingTask();
             t.setStatus("IN_PROGRESS");
             when(taskMapper.selectById(1L)).thenReturn(t);
             when(boardMapper.selectById(1L)).thenReturn(new QueueBoard());
-            // Mock reportService to return a report with id
+            // maybeGenerateReport 回查同预约任务:仅此一项(完成后无活跃任务) → 出报告
+            when(taskMapper.selectList(any())).thenReturn(List.of(t));
             var mockReport = new com.hospital.core.report.domain.Report();
             mockReport.setId(1L);
-            when(reportService.createPatientReport(any(), any(), any())).thenReturn(mockReport);
+            when(reportService.createPatientReport(any(), any(), any(), any())).thenReturn(mockReport);
 
             service.complete(1L);
 
@@ -172,6 +173,8 @@ class DispatchServiceTest {
 
             verify(boardMapper).updateById(boardCaptor.capture());
             assertThat(boardCaptor.getValue().getStatus()).isEqualTo("DONE");
+
+            verify(reportService).createPatientReport(any(), any(), any(), any());
         }
 
         @Test
@@ -202,6 +205,125 @@ class DispatchServiceTest {
             assertThatThrownBy(() -> service.complete(999L))
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining("任务不存在");
+        }
+    }
+
+    @Nested
+    @DisplayName("跳过与重新排队")
+    class SkipAndRequeue {
+
+        private ExamTask task(long id, String status, int seq) {
+            var t = new ExamTask();
+            t.setId(id);
+            t.setAppointmentId(1L);
+            t.setPatientId(1L);
+            t.setStatus(status);
+            t.setStation("采血室");
+            t.setItemName("血常规");
+            t.setSeq(seq);
+            return t;
+        }
+
+        @Test
+        @DisplayName("skip: DONE 任务不可跳过 → IllegalStateException")
+        void skip_doneTask_throws() {
+            when(taskMapper.selectById(1L)).thenReturn(task(1L, "DONE", 1));
+
+            assertThatThrownBy(() -> service.skip(1L))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("仅待检/检查中");
+            verify(taskMapper, never()).updateById(ArgumentMatchers.isA(ExamTask.class));
+        }
+
+        @Test
+        @DisplayName("skip 最后一个活跃任务(其余已完成) → 出报告并标注未检项")
+        void skip_lastActive_generatesReportWithSkippedNote() {
+            var t = task(1L, "PENDING", 2);
+            var doneSibling = task(2L, "DONE", 1);
+            when(taskMapper.selectById(1L)).thenReturn(t);
+            when(boardMapper.selectById(1L)).thenReturn(new QueueBoard());
+            when(taskMapper.selectList(any())).thenReturn(List.of(t, doneSibling));
+            var mockReport = new com.hospital.core.report.domain.Report();
+            mockReport.setId(9L);
+            when(reportService.createPatientReport(any(), any(), any(), any())).thenReturn(mockReport);
+
+            service.skip(1L);
+
+            ArgumentCaptor<String> contentCaptor = ArgumentCaptor.forClass(String.class);
+            verify(reportService).createPatientReport(any(), any(), any(), contentCaptor.capture());
+            assertThat(contentCaptor.getValue()).contains("未检项目").contains("补检");
+        }
+
+        @Test
+        @DisplayName("skip 后仍有待检任务 → 不出报告")
+        void skip_stillActive_noReport() {
+            var t = task(1L, "PENDING", 1);
+            var pendingSibling = task(2L, "PENDING", 2);
+            when(taskMapper.selectById(1L)).thenReturn(t);
+            when(boardMapper.selectById(1L)).thenReturn(new QueueBoard());
+            when(taskMapper.selectList(any())).thenReturn(List.of(t, pendingSibling));
+
+            service.skip(1L);
+
+            verify(reportService, never()).createPatientReport(any(), any(), any(), any());
+        }
+
+        @Test
+        @DisplayName("requeue: SKIPPED → PENDING 排队尾,清空 startedAt")
+        void requeue_success() {
+            var t = task(1L, "SKIPPED", 1);
+            t.setStartedAt(java.time.LocalDateTime.now());
+            var pendingSibling = task(2L, "PENDING", 5);
+            when(taskMapper.selectById(1L)).thenReturn(t);
+            when(boardMapper.selectById(1L)).thenReturn(new QueueBoard());
+            when(taskMapper.selectList(any())).thenReturn(List.of(t, pendingSibling));
+
+            service.requeue(1L);
+
+            verify(taskMapper).updateById(taskCaptor.capture());
+            ExamTask updated = taskCaptor.getValue();
+            assertThat(updated.getStatus()).isEqualTo("PENDING");
+            assertThat(updated.getSeq()).isEqualTo(6);
+            assertThat(updated.getStartedAt()).isNull();
+        }
+
+        @Test
+        @DisplayName("requeue: 非 SKIPPED 任务 → IllegalStateException")
+        void requeue_notSkipped_throws() {
+            when(taskMapper.selectById(1L)).thenReturn(task(1L, "PENDING", 1));
+
+            assertThatThrownBy(() -> service.requeue(1L))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("仅已跳过");
+        }
+
+        @Test
+        @DisplayName("requeue: 预约已出具报告(查真实报告记录) → 拒绝重新排队")
+        void requeue_afterReport_throws() {
+            var t = task(1L, "SKIPPED", 2);
+            when(taskMapper.selectById(1L)).thenReturn(t);
+            when(reportService.existsForAppointment(1L)).thenReturn(true);
+
+            assertThatThrownBy(() -> service.requeue(1L))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("已出具报告");
+            verify(taskMapper, never()).updateById(ArgumentMatchers.isA(ExamTask.class));
+        }
+
+        @Test
+        @DisplayName("requeue: 其余项已完成但未出报告(存量旧数据) → 允许重新排队")
+        void requeue_doneSiblingsButNoReport_allowed() {
+            var t = task(1L, "SKIPPED", 2);
+            var doneSibling = task(2L, "DONE", 1);
+            when(taskMapper.selectById(1L)).thenReturn(t);
+            when(boardMapper.selectById(1L)).thenReturn(new QueueBoard());
+            when(reportService.existsForAppointment(1L)).thenReturn(false);
+            when(taskMapper.selectList(any())).thenReturn(List.of(t, doneSibling));
+
+            service.requeue(1L);
+
+            verify(taskMapper).updateById(taskCaptor.capture());
+            assertThat(taskCaptor.getValue().getStatus()).isEqualTo("PENDING");
         }
     }
 

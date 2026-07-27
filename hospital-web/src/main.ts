@@ -20,7 +20,7 @@ app.use(ElementPlus)
 bindRouter(router)
 bindHttpRouter(router)
 
-// 认证初始化:本地开发态立即 resolve;AUTH_ENABLED 态走真登录。
+// 认证初始化:从 localStorage 恢复登录态(刷新免登)。
 // 完成后挂路由并 mount,确保路由守卫拿到的 auth 状态已就绪。
 initAuth().finally(() => {
   app.use(router)

@@ -380,6 +380,7 @@ Spring Boot 3 + Java 21 · ArchUnit 架构守护 · DDD 限界上下文 · CQRS-
   2. 所有"按当前用户查自己数据"的接口(`me()`、`myQueue()` 等)统一调用 `CurrentUserResolver.resolveUsername(request)`,**禁止**用 `auth.getName()` 当业务主键。
 - **实施现状**:`PatientController.me()` 与 `DispatchController.myQueue()` 已改用 `CurrentUserResolver`;前端 `stores/patient.ts` 的 `fetchMe()` 已加 catch 防 404 冒泡。
 - **后果**:易 — 开发态与认证态都能正确识别当前登录用户;难 — 其他已用 `getName()` 当业务主键的老代码需逐一体检。
+- **修订(2026-07)**:登录模式收敛为单一真登录(手机号 + 密码)后,`X-Username` 开发态 fallback 已移除,`resolveUsername()` 改为无参方法,仅从 SecurityContext 取 JWT `sub`(登录手机号)。
 
 ### ADR-021 就诊医嘱可修改 / 取消(医嘱纠偏与撤回)
 - **状态**:已采纳
@@ -400,7 +401,7 @@ Spring Boot 3 + Java 21 · ArchUnit 架构守护 · DDD 限界上下文 · CQRS-
   2. `PrescriptionController.dispense` / `cancel`:`@PreAuthorize("hasAuthority('pharmacy:dispense')")` —— 药师发药 / 取消。
   3. `LabController.createFromVisit`:`@PreAuthorize("hasAuthority('visit:entry')")` —— 医生创建检验申请。
   4. `LabController.submitResults` / `cancel`:`@PreAuthorize("hasAuthority('order:execute')")` —— 护士录入结果 / 取消。
-  5. `DepartmentController` / `StaffController`:`@PreAuthorize("hasAuthority('system:admin')")` 类级管控。
+  5. `DepartmentController`：读操作（list/get）需 `visit:entry` 或 `patient:booking`（C端患者可访问科室列表），写操作（create/update/delete）需 `system:admin`。`StaffController`：读操作需 `visit:entry`，写操作需 `system:admin`。
   6. 前端 `VisitDetailView` "创建处方" 按钮 `canEntry` 可见(医生);`PharmacyPrescriptionsView` 发药 / 取消按钮 `canExecute` 可见(药师);`LabRequisitionDetailView` 录入结果 / 取消同理。
   7. `BookingController.book` 由 `hasRole("patient")` 改为 `hasAuthority("patient:booking")`,与 ADR-012 新增的第七权(patient:booking)一致。
 - **后果**:易 — 权限与临床实际流程完全对齐,可在简历中展示"权限设计贴合业务";难 — 需回归测试角色与 authority 映射(新加 `patient:booking`)。

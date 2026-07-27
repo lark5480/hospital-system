@@ -6,13 +6,19 @@ import java.util.Map;
 
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
 
 import com.hospital.core.booking.application.BookingService;
 import com.hospital.core.booking.domain.Appointment;
 import com.hospital.core.booking.domain.ExamPackage;
-import com.hospital.core.platform.annotation.AuditLog;
 import com.hospital.core.booking.domain.Slot;
+import com.hospital.core.platform.annotation.AuditLog;
 
 import lombok.RequiredArgsConstructor;
 
@@ -69,12 +75,17 @@ public class BookingController {
         return ResponseEntity.status(409).body(body);
     }
 
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<Map<String, String>> handleNotFound(IllegalArgumentException ex) {
+        Map<String, String> body = new HashMap<>();
+        body.put("error", ex.getMessage());
+        return ResponseEntity.status(404).body(body);
+    }
+
     private AppointmentDetail toDetail(Appointment appt) {
         ExamPackage pkg = bookingService.getPackage(appt.getPackageId());
-        Slot slot = bookingService.listSlots(appt.getPackageId()).stream()
-                .filter(s -> s.getId().equals(appt.getSlotId()))
-                .findFirst()
-                .orElse(null);
+        // 直查号源实体:listSlots 已过滤过期号源,历史预约的号源需按 ID 回查
+        Slot slot = appt.getSlotId() == null ? null : bookingService.getSlot(appt.getSlotId());
         AppointmentDetail d = new AppointmentDetail();
         d.setId(appt.getId());
         d.setPatientId(appt.getPatientId());

@@ -1,5 +1,18 @@
 package com.hospital.core.pharmacy.api;
 
+import java.util.List;
+import java.util.Map;
+
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
 import com.hospital.core.org.application.StaffService;
 import com.hospital.core.org.domain.Staff;
 import com.hospital.core.pharmacy.application.PrescriptionDetail;
@@ -7,14 +20,8 @@ import com.hospital.core.pharmacy.application.PrescriptionService;
 import com.hospital.core.pharmacy.domain.Prescription;
 import com.hospital.core.platform.annotation.AuditLog;
 import com.hospital.core.platform.security.CurrentUserResolver;
-import jakarta.servlet.http.HttpServletRequest;
-import lombok.RequiredArgsConstructor;
-import org.springframework.http.ResponseEntity;
-import org.springframework.security.access.prepost.PreAuthorize;
-import org.springframework.web.bind.annotation.*;
 
-import java.util.List;
-import java.util.Map;
+import lombok.RequiredArgsConstructor;
 
 @RestController
 @RequiredArgsConstructor
@@ -55,14 +62,13 @@ public class PrescriptionController {
     @AuditLog(action = "DISPENSE")
     @PostMapping("/api/pharmacy/prescriptions/{id}/dispense")
     public ResponseEntity<Prescription> dispense(@PathVariable Long id,
-            @RequestBody DispenseRequest req,
-            HttpServletRequest request) {
-        Long pharmacistId = resolvePharmacistId(request);
+            @RequestBody DispenseRequest req) {
+        Long pharmacistId = resolvePharmacistId();
         return ResponseEntity.ok(prescriptionService.dispense(id, pharmacistId, req.getRemark()));
     }
 
-    private Long resolvePharmacistId(HttpServletRequest request) {
-        String phone = CurrentUserResolver.resolveUsername(request);
+    private Long resolvePharmacistId() {
+        String phone = CurrentUserResolver.resolveUsername();
         if (phone == null) return 0L;
         Staff staff = staffService.findByPhone(phone);
         return staff != null ? staff.getId() : 0L;
