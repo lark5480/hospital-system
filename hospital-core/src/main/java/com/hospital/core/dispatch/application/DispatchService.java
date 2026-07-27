@@ -1,29 +1,31 @@
 package com.hospital.core.dispatch.application;
 
-import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
-import com.hospital.core.booking.domain.AppointmentCreatedEvent;
-import com.hospital.core.booking.domain.AppointmentStatusEvent;
-import com.hospital.core.booking.domain.ExamItemBrief;
-import com.hospital.core.dispatch.domain.ExamTask;
-import com.hospital.core.dispatch.domain.PatientCalledEvent;
-import com.hospital.core.dispatch.domain.QueueBoard;
-import com.hospital.core.dispatch.api.DispatchSseController;
-import com.hospital.core.report.domain.Report;
-import com.hospital.core.report.domain.ReportPdfEvent;
-import com.hospital.core.dispatch.infrastructure.ExamTaskMapper;
-import com.hospital.core.dispatch.infrastructure.QueueBoardMapper;
-import com.hospital.core.report.application.ReportService;
-import lombok.RequiredArgsConstructor;
+import java.time.LocalDateTime;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
+
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.event.TransactionalEventListener;
 
-import java.time.LocalDateTime;
-import java.util.Comparator;
-import java.util.List;
-import java.util.Map;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.hospital.core.booking.domain.AppointmentCreatedEvent;
+import com.hospital.core.booking.domain.AppointmentStatusEvent;
+import com.hospital.core.booking.domain.ExamItemBrief;
+import com.hospital.core.dispatch.api.DispatchSseController;
+import com.hospital.core.dispatch.domain.ExamTask;
+import com.hospital.core.dispatch.domain.PatientCalledEvent;
+import com.hospital.core.dispatch.domain.QueueBoard;
+import com.hospital.core.dispatch.infrastructure.ExamTaskMapper;
+import com.hospital.core.dispatch.infrastructure.QueueBoardMapper;
+import com.hospital.core.report.application.ReportService;
+import com.hospital.core.report.domain.Report;
+import com.hospital.core.report.domain.ReportPdfEvent;
+
+import lombok.RequiredArgsConstructor;
 
 /**
  * 排队分发引擎(应用服务)。
@@ -100,7 +102,7 @@ public class DispatchService {
         sseController.broadcastBoardUpdate(new BoardUpdateEvent(t.getStation(), taskId, "start"));
     }
 
-    /** 工位完成检查某任务。若某预约的全部任务均已完成,自动生成报告。 */
+    /** 工位完成检查某任务。若某预约的全部任务均已终态(完成/跳过),自动生成报告。 */
     @Transactional
     public void complete(Long taskId) {
         ExamTask t = requireTask(taskId);
@@ -121,27 +123,49 @@ public class DispatchService {
         sseController.broadcastBoardUpdate(new BoardUpdateEvent(t.getStation(), taskId, "complete"));
     }
 
-    /** 若某预约的全部任务均为 DONE 状态,自动创建一份已发布的体检报告。 */
+    /**
+     * 若某预约已无待检/检查中任务且至少完成一项,自动创建一份已发布的体检报告。
+     * 跳过项不阻塞出报告(真实场景:患者放弃某项仍应出具已检项目的报告),报告内标注未检项。
+     * 全部跳过(零完成)不出报告。
+     */
     private void maybeGenerateReport(Long appointmentId, Long patientId) {
+        // 幂等护栏:同一预约只出一份报告(以真实报告记录为准)
+        if (reportService.existsForAppointment(appointmentId)) return;
         List<ExamTask> all = taskMapper.selectList(
                 new QueryWrapper<ExamTask>().eq("appointment_id", appointmentId));
-        boolean allDone = all.stream().allMatch(t -> "DONE".equals(t.getStatus()));
-        if (!allDone) return;
+        boolean anyActive = all.stream().anyMatch(t ->
+                "PENDING".equals(t.getStatus()) || "IN_PROGRESS".equals(t.getStatus()));
+        if (anyActive) return;
+        List<ExamTask> done = all.stream().filter(t -> "DONE".equals(t.getStatus())).toList();
+        List<ExamTask> skipped = all.stream().filter(t -> "SKIPPED".equals(t.getStatus())).toList();
+        if (done.isEmpty()) return;
 
-        String title = "体检报告(" + all.size() + "项)";
+        String title = "体检报告(完成 " + done.size() + "/" + all.size() + " 项)";
         StringBuilder content = new StringBuilder();
         content.append("## 体检总结\n\n");
         content.append("**完成项目**:\n\n");
-        for (ExamTask t : all) {
+        for (ExamTask t : done) {
             content.append("- **").append(t.getItemName()).append("**");
             content.append(" (").append(t.getStation()).append(")");
             content.append(" → 未见异常\n");
         }
+        if (!skipped.isEmpty()) {
+            content.append("\n**未检项目**(已跳过):\n\n");
+            for (ExamTask t : skipped) {
+                content.append("- ").append(t.getItemName())
+                        .append(" (").append(t.getStation()).append(")\n");
+            }
+        }
         content.append("\n---\n\n");
-        content.append("**结论**:本次体检各项目均已完成,未见明显异常。\n");
+        if (skipped.isEmpty()) {
+            content.append("**结论**:本次体检各项目均已完成,未见明显异常。\n");
+        } else {
+            content.append("**结论**:已完成项目未见明显异常;存在 ").append(skipped.size())
+                    .append(" 项未检,建议另行预约补检。\n");
+        }
         content.append("**建议**:保持良好生活习惯,定期复查。\n");
 
-        Report report = reportService.createPatientReport(patientId, title, content.toString());
+        Report report = reportService.createPatientReport(patientId, appointmentId, title, content.toString());
         // 体检报告落库后,发布 PDF 生成事件(异步预生成并上传 MinIO,解耦生成与下载)
         eventPublisher.publishEvent(new ReportPdfEvent(report.getId(), patientId, title, content.toString()));
         // 回写预约单:全部任务完成 = DONE
@@ -225,15 +249,46 @@ public class DispatchService {
         sseController.broadcastBoardUpdate(new BoardUpdateEvent(t.getStation(), taskId, "reorder"));
     }
 
-    /** 跳过:放弃某任务置 SKIPPED(用于患者离开等场景)。 */
+    /** 跳过:放弃某任务置 SKIPPED(用于患者离开等场景)。仅待检/检查中可跳过。 */
     @Transactional
     public void skip(Long taskId) {
         ExamTask t = requireTask(taskId);
+        if (!"PENDING".equals(t.getStatus()) && !"IN_PROGRESS".equals(t.getStatus())) {
+            throw new IllegalStateException("仅待检/检查中任务可跳过");
+        }
         t.setStatus("SKIPPED");
         taskMapper.updateById(t);
         syncBoard(t);
+        // 跳过可能是该预约最后一个活跃任务 → 检查是否可出报告(跳过项不阻塞)
+        maybeGenerateReport(t.getAppointmentId(), t.getPatientId());
+        // 该工位空出来了,自动叫号下一位
+        callNext(t.getStation());
         // SSE推送
         sseController.broadcastBoardUpdate(new BoardUpdateEvent(t.getStation(), taskId, "skip"));
+    }
+
+    /**
+     * 重新排队:将某 SKIPPED 任务恢复为 PENDING 并排到该 station 队尾(患者去而复返场景)。
+     * 若该预约已出具报告(查真实报告记录,不靠任务状态推断)则不允许,避免重复出报告。
+     */
+    @Transactional
+    public void requeue(Long taskId) {
+        ExamTask t = requireTask(taskId);
+        if (!"SKIPPED".equals(t.getStatus())) {
+            throw new IllegalStateException("仅已跳过任务可重新排队");
+        }
+        if (reportService.existsForAppointment(t.getAppointmentId())) {
+            throw new IllegalStateException("该预约已出具报告,跳过项不可再重新排队,请另行预约补检");
+        }
+        Integer maxSeq = taskMapper.selectList(new QueryWrapper<ExamTask>().eq("station", t.getStation()))
+                .stream().map(ExamTask::getSeq).max(Integer::compareTo).orElse(0);
+        t.setStatus("PENDING");
+        t.setSeq(maxSeq + 1);
+        t.setStartedAt(null);
+        taskMapper.updateById(t);
+        syncBoard(t);
+        // SSE推送
+        sseController.broadcastBoardUpdate(new BoardUpdateEvent(t.getStation(), taskId, "requeue"));
     }
 
     /** 活跃工位列表(存在 PENDING/IN_PROGRESS 任务的 station),供大屏页选择。 */

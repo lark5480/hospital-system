@@ -159,7 +159,7 @@ public class VisitController {
     }
 
     private Long currentDeptId() {
-        String phone = CurrentUserResolver.resolveUsername(null);
+        String phone = CurrentUserResolver.resolveUsername();
         if (phone == null) return null;
         Staff staff = staffService.findByPhone(phone);
         if (staff == null) return null;

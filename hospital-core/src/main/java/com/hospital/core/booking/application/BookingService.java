@@ -1,5 +1,19 @@
 package com.hospital.core.booking.application;
 
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.Comparator;
+import java.util.List;
+
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.event.TransactionalEventListener;
+
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.hospital.core.booking.domain.Appointment;
@@ -14,20 +28,8 @@ import com.hospital.core.booking.infrastructure.ExamItemMapper;
 import com.hospital.core.booking.infrastructure.ExamPackageMapper;
 import com.hospital.core.booking.infrastructure.SlotMapper;
 import com.hospital.core.patient.api.PatientApi;
-import lombok.RequiredArgsConstructor;
-import org.springframework.cache.annotation.CacheEvict;
-import org.springframework.cache.annotation.Cacheable;
-import org.springframework.context.ApplicationEventPublisher;
-import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Propagation;
-import org.springframework.transaction.annotation.Transactional;
-import org.springframework.transaction.event.TransactionalEventListener;
 
-import java.math.BigDecimal;
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.util.Comparator;
-import java.util.List;
+import lombok.RequiredArgsConstructor;
 
 @Service
 @RequiredArgsConstructor
@@ -81,12 +83,26 @@ public class BookingService {
 
     @Transactional
     public List<Slot> listSlots(Long packageId) {
-        List<Slot> slots = slotMapper.selectList(new QueryWrapper<Slot>().eq("package_id", packageId));
+        List<Slot> slots = selectUpcomingSlots(packageId);
         if (slots.isEmpty()) {
             generateSlots(packageId);
-            slots = slotMapper.selectList(new QueryWrapper<Slot>().eq("package_id", packageId));
+            slots = selectUpcomingSlots(packageId);
         }
         return slots;
+    }
+
+    /** 只查今天及以后的号源:过期号源对 C 端不可见(旧行保留在库,供历史预约回查)。 */
+    private List<Slot> selectUpcomingSlots(Long packageId) {
+        return slotMapper.selectList(new LambdaQueryWrapper<Slot>()
+                .eq(Slot::getPackageId, packageId)
+                .ge(Slot::getExamDate, LocalDate.now())
+                .orderByAsc(Slot::getExamDate)
+                .orderByAsc(Slot::getPeriod));
+    }
+
+    /** 按 ID 查号源(不过滤日期,历史预约详情回查用)。 */
+    public Slot getSlot(Long id) {
+        return slotMapper.selectById(id);
     }
 
     /**
@@ -152,12 +168,20 @@ public class BookingService {
 
     /**
      * C 端预约核心:同一事务内原子占号 + 落预约单。
-     * 先以 SlotMapper.incrementBooked 原子占号(数据库保证 booked<capacity 才成功),
+     * 先预检号源存在且未过期(过期号源即使有余量也不可约),
+     * 再以 SlotMapper.incrementBooked 原子占号(数据库保证 booked<capacity 才成功),
      * 失败(返回 0)即号源已满,抛异常触发事务回滚,绝不会写出超额预约。
      * 成功后发布 AppointmentCreatedEvent(提交后由 Dispatch 模块消费,生成各 station 任务)。
      */
     @Transactional
     public Appointment book(Long patientId, Long packageId, Long slotId) {
+        Slot slot = slotMapper.selectById(slotId);
+        if (slot == null) {
+            throw new IllegalArgumentException("号源不存在");
+        }
+        if (slot.getExamDate().isBefore(LocalDate.now())) {
+            throw new IllegalStateException("号源已过期,请选择今天及以后的时段");
+        }
         int updated = slotMapper.incrementBooked(slotId);
         if (updated == 0) {
             throw new IllegalStateException("号源已满");

@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, onActivated, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import { useDispatchStore } from '@/stores/dispatch'
-import { callNext, reorderTail, skipTask } from '@/api/dispatch'
+import { callNext, reorderTail, requeueTask, skipTask } from '@/api/dispatch'
 import { subscribeBoardUpdates, unsubscribe } from '@/api/dispatchSSE'
 import type { TaskStatus } from '@/types/dispatch'
 
@@ -41,6 +42,16 @@ async function handleReorder(id: number) {
 
 async function handleSkip(id: number) {
   await skipTask(id)
+  await store.fetchBoard()
+}
+
+/** 已跳过 → 重新排队(患者去而复返);预约已出报告时后端拒绝,展示原因。 */
+async function handleRequeue(id: number) {
+  try {
+    await requeueTask(id)
+  } catch (e: any) {
+    ElMessage.warning(e?.response?.data?.error || '重新排队失败')
+  }
   await store.fetchBoard()
 }
 
@@ -100,34 +111,39 @@ function setupSSE() {
           <span class="station-title">{{ g.station }}</span>
           <el-tag size="small" effect="plain">{{ g.tasks.length }} 项</el-tag>
         </template>
-        <div v-for="t in g.tasks" :key="t.id" class="task">
-          <div class="task-main">
+        <div v-for="t in g.tasks" :key="t.id" class="task" :class="`task--${t.status.toLowerCase()}`">
+          <div class="task-head">
             <span class="seq">#{{ t.seq }}</span>
-            <div>
-              <div class="item">{{ t.itemName }}</div>
-              <div class="patient">{{ t.patientName }} · {{ statusMeta[t.status].text }}</div>
-            </div>
+            <span class="item">{{ t.itemName }}</span>
+            <el-tag :type="statusMeta[t.status].type" size="small" effect="light">
+              {{ statusMeta[t.status].text }}
+            </el-tag>
           </div>
-          <div class="task-actions">
-            <el-tag :type="statusMeta[t.status].type" size="small">{{ statusMeta[t.status].text }}</el-tag>
-            <el-button v-if="t.status === 'PENDING'" type="primary" size="small" @click="store.start(t.id)">
-              开始
-            </el-button>
-            <el-button v-if="t.status === 'IN_PROGRESS'" type="success" size="small" @click="store.complete(t.id)">
-              完成
-            </el-button>
-            <el-button v-if="t.status === 'PENDING'" size="small" plain @click="handleReorder(t.id)">
-              过号
-            </el-button>
-            <el-button
-              v-if="t.status === 'PENDING' || t.status === 'IN_PROGRESS'"
-              size="small"
-              plain
-              type="danger"
-              @click="handleSkip(t.id)"
-            >
-              跳过
-            </el-button>
+          <div class="task-foot">
+            <span class="patient">{{ t.patientName || '—' }}</span>
+            <div class="task-actions">
+              <el-button v-if="t.status === 'PENDING'" type="primary" size="small" @click="store.start(t.id)">
+                开始
+              </el-button>
+              <el-button v-if="t.status === 'IN_PROGRESS'" type="success" size="small" @click="store.complete(t.id)">
+                完成
+              </el-button>
+              <el-button v-if="t.status === 'PENDING'" size="small" plain @click="handleReorder(t.id)">
+                过号
+              </el-button>
+              <el-button
+                v-if="t.status === 'PENDING' || t.status === 'IN_PROGRESS'"
+                size="small"
+                plain
+                type="danger"
+                @click="handleSkip(t.id)"
+              >
+                跳过
+              </el-button>
+              <el-button v-if="t.status === 'SKIPPED'" size="small" plain type="warning" @click="handleRequeue(t.id)">
+                重新排队
+              </el-button>
+            </div>
           </div>
         </div>
       </el-card>
@@ -148,47 +164,73 @@ function setupSSE() {
   font-size: var(--fs-xs);
 }
 .board {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
   gap: var(--sp-4);
-  flex-wrap: wrap;
-  align-items: flex-start;
-}
-.station {
-  width: 280px;
+  align-items: start;
 }
 .station-title {
   font-weight: var(--fw-semibold);
   margin-right: var(--sp-2);
 }
 .task {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 10px 0;
+  padding: 10px 12px;
+  margin: 0 -12px;
   border-bottom: 1px solid var(--border-light);
+  border-left: 3px solid transparent;
 }
 .task:last-child {
   border-bottom: none;
 }
-.task-main {
+.task--in_progress {
+  border-left-color: var(--el-color-warning);
+  background: var(--el-color-warning-light-9);
+}
+.task--done {
+  opacity: 0.55;
+}
+.task--skipped {
+  opacity: 0.55;
+}
+.task-head {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--sp-2);
 }
 .seq {
   font-weight: var(--fw-bold);
   color: var(--brand);
+  min-width: 26px;
 }
 .item {
+  flex: 1;
   font-weight: var(--fw-medium);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.task-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 6px;
+  padding-left: calc(26px + var(--sp-2));
 }
 .patient {
   font-size: var(--fs-xs);
   color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-right: var(--sp-2);
 }
 .task-actions {
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
+  gap: 4px;
+  flex-shrink: 0;
+}
+.task-actions .el-button + .el-button {
+  margin-left: 0;
 }
 </style>

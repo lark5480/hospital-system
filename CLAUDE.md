@@ -32,9 +32,6 @@ npm install
 npm run dev              # :5173，经 Vite 代理转发至网关
 npm run build            # 类型检查 + 生产构建
 npm run type-check       # 仅做 vue-tsc 类型检查
-
-# 生产登录态（可选，默认 dev 模式直连）
-echo "VITE_AUTH_ENABLED=true" > hospital-web/.env.local
 ```
 
 ## 项目架构
@@ -136,7 +133,7 @@ Vue 3 + TypeScript + Vite 5 单页应用，配 Element Plus：
 - **路由：** 挂在 MainLayout 下的嵌套路由，16 个视图，`meta.requiresAuth` + 全局守卫
 - **状态：** 按业务域拆分的 Pinia store（`auth`、`visit`、`notification`、`dispatch`、`menu`、`patient`）
 - **接口：** `api/http.ts` 中的 Axios 实例（带 Bearer 令牌拦截器），按业务域划分的 API 模块
-- **认证：** `VITE_AUTH_ENABLED=true` 时走自管 JWT 登录（手机号 + 密码）；关闭时以 doctor01 模拟全权限用户
+- **认证：** 统一自管 JWT 真登录（手机号 + 密码），登录态持久化到 localStorage，刷新免登
 - **账号自助：** 登录页（`/login` 独立路由）+ 右上角下拉（修改密码）+ 忘记密码引导（联系管理员重置）
 
 ### 测试约定

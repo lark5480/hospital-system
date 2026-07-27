@@ -1,5 +1,11 @@
 package com.hospital.core.report.application;
 
+import java.time.LocalDateTime;
+import java.util.List;
+
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.hospital.core.clinical.domain.Visit;
 import com.hospital.core.clinical.infrastructure.VisitMapper;
@@ -9,12 +15,8 @@ import com.hospital.core.patient.application.PatientService;
 import com.hospital.core.report.domain.Report;
 import com.hospital.core.report.domain.ReportDetail;
 import com.hospital.core.report.infrastructure.ReportMapper;
-import lombok.RequiredArgsConstructor;
-import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
-import java.time.LocalDateTime;
-import java.util.List;
+import lombok.RequiredArgsConstructor;
 
 /**
  * 报告应用服务:报告创建/发布/查询。
@@ -58,11 +60,12 @@ public class ReportService {
         return r;
     }
 
-    /** C端报告:创建并直接发布(供排队检查全部完成后自动出报告用)。 */
+    /** C端报告:创建并直接发布(供排队检查全部完成后自动出报告用),关联预约ID以便溯源/防重。 */
     @Transactional
-    public Report createPatientReport(Long patientId, String title, String content) {
+    public Report createPatientReport(Long patientId, Long appointmentId, String title, String content) {
         Report r = new Report();
         r.setPatientId(patientId);
+        r.setAppointmentId(appointmentId);
         r.setType("EXAM");
         r.setTitle(title);
         r.setContent(content);
@@ -72,6 +75,12 @@ public class ReportService {
         r.setPublishedAt(LocalDateTime.now());
         reportMapper.insert(r);
         return r;
+    }
+
+    /** 某体检预约是否已出具报告(requeue 护栏:以真实报告记录为准,不靠任务状态推断)。 */
+    public boolean existsForAppointment(Long appointmentId) {
+        return reportMapper.selectCount(
+                new LambdaQueryWrapper<Report>().eq(Report::getAppointmentId, appointmentId)) > 0;
     }
 
     @Transactional

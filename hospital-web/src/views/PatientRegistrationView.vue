@@ -59,7 +59,7 @@ onMounted(async () => {
 
 <template>
   <div>
-    <h2 style="margin: 0 0 16px">门诊挂号</h2>
+    <h2 style="margin: 0 0 16px">自助挂号</h2>
 
     <!-- 当前排队状态 -->
     <el-card v-if="myCalled" shadow="never" class="block status-card called">
@@ -80,7 +80,7 @@ onMounted(async () => {
           {{ d.name }}
         </el-button>
       </div>
-      <p v-if="!patientId" class="hint">提示：未检测到患者身份。iam 模式下请用患者账号（patient01）登录；dev 模式下请使用 B 端"门诊挂号"页面由护士代挂。</p>
+      <p v-if="!patientId" class="hint">提示：未检测到患者身份。请用患者账号（如 13700000000）登录后再挂号，或由护士在 B 端“门诊挂号”页面代挂。</p>
     </el-card>
 
     <!-- 我的挂号记录 -->

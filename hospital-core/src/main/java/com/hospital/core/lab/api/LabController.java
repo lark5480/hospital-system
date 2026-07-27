@@ -1,5 +1,18 @@
 package com.hospital.core.lab.api;
 
+import java.util.List;
+import java.util.Map;
+
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
 import com.hospital.core.lab.application.LabRequisitionDetail;
 import com.hospital.core.lab.application.LabRequisitionListItem;
 import com.hospital.core.lab.application.LabService;
@@ -8,13 +21,8 @@ import com.hospital.core.org.application.StaffService;
 import com.hospital.core.org.domain.Staff;
 import com.hospital.core.platform.annotation.AuditLog;
 import com.hospital.core.platform.security.CurrentUserResolver;
-import lombok.RequiredArgsConstructor;
-import org.springframework.http.ResponseEntity;
-import org.springframework.security.access.prepost.PreAuthorize;
-import org.springframework.web.bind.annotation.*;
 
-import java.util.List;
-import java.util.Map;
+import lombok.RequiredArgsConstructor;
 
 @RestController
 @RequiredArgsConstructor
@@ -96,7 +104,7 @@ public class LabController {
     }
 
     private Long currentDeptId() {
-        String phone = CurrentUserResolver.resolveUsername(null);
+        String phone = CurrentUserResolver.resolveUsername();
         if (phone == null) return null;
         Staff staff = staffService.findByPhone(phone);
         return staff != null ? staff.getDeptId() : null;

@@ -1,13 +1,17 @@
 package com.hospital.core.booking.application;
 
-import com.hospital.core.booking.domain.Appointment;
-import com.hospital.core.booking.domain.AppointmentCreatedEvent;
-import com.hospital.core.booking.domain.ExamItem;
-import com.hospital.core.booking.infrastructure.AppointmentMapper;
-import com.hospital.core.booking.infrastructure.ExamItemMapper;
-import com.hospital.core.booking.infrastructure.ExamPackageMapper;
-import com.hospital.core.booking.infrastructure.SlotMapper;
-import com.hospital.core.patient.api.PatientApi;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.isA;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.reset;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import java.time.LocalDate;
+import java.util.List;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -19,19 +23,23 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.context.ApplicationEventPublisher;
 
-import java.util.List;
-
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.isA;
-import static org.mockito.Mockito.*;
+import com.hospital.core.booking.domain.Appointment;
+import com.hospital.core.booking.domain.AppointmentCreatedEvent;
+import com.hospital.core.booking.domain.ExamItem;
+import com.hospital.core.booking.domain.Slot;
+import com.hospital.core.booking.infrastructure.AppointmentMapper;
+import com.hospital.core.booking.infrastructure.ExamItemMapper;
+import com.hospital.core.booking.infrastructure.ExamPackageMapper;
+import com.hospital.core.booking.infrastructure.SlotMapper;
+import com.hospital.core.patient.api.PatientApi;
 
 /**
- * BookingService 核心路径:原子占号 + 预约创建。
+ * BookingService 核心路径:号源校验 + 原子占号 + 预约创建。
  * <p>
  * 覆盖场景:
  * - 号源充足 → 占号成功 → INSERT 预约 + 发布事件
  * - 号源已满 → 占号失败 → IllegalStateException(事务回滚,零副作用)
+ * - 号源不存在 / 已过期 → 预检拦截,不占号不落单
  */
 @ExtendWith(MockitoExtension.class)
 class BookingServiceTest {
@@ -62,9 +70,22 @@ class BookingServiceTest {
         private final Long patientId = 42L;
         private final Long packageId = 7L;
 
+        /** 默认号源:今天,未过期。 */
+        private Slot futureSlot() {
+            Slot s = new Slot();
+            s.setId(slotId);
+            s.setPackageId(packageId);
+            s.setExamDate(LocalDate.now());
+            s.setPeriod("AM");
+            s.setCapacity(2);
+            s.setBooked(0);
+            return s;
+        }
+
         @Test
         @DisplayName("号源充足 → 占号成功 → INSERT 预约 + 发布事件")
         void book_success() {
+            when(slotMapper.selectById(slotId)).thenReturn(futureSlot());
             when(slotMapper.incrementBooked(slotId)).thenReturn(1);
             when(itemMapper.selectList(any())).thenReturn(List.of(
                     item("采血室", "血常规", 1),
@@ -99,6 +120,7 @@ class BookingServiceTest {
         @Test
         @DisplayName("号源已满(incrementBooked=0) → IllegalStateException → 无 INSERT 无事件")
         void book_slotFull_throws() {
+            when(slotMapper.selectById(slotId)).thenReturn(futureSlot());
             when(slotMapper.incrementBooked(slotId)).thenReturn(0);
 
             assertThatThrownBy(() -> service.book(patientId, packageId, slotId))
@@ -110,8 +132,39 @@ class BookingServiceTest {
         }
 
         @Test
+        @DisplayName("号源不存在 → IllegalArgumentException → 不占号不落单")
+        void book_slotNotFound_throws() {
+            when(slotMapper.selectById(slotId)).thenReturn(null);
+
+            assertThatThrownBy(() -> service.book(patientId, packageId, slotId))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessage("号源不存在");
+
+            verify(slotMapper, never()).incrementBooked(any());
+            verify(appointmentMapper, never()).insert(isA(Appointment.class));
+            verify(publisher, never()).publishEvent(any());
+        }
+
+        @Test
+        @DisplayName("号源已过期(exam_date < 今天) → IllegalStateException → 不占号不落单")
+        void book_expiredSlot_throws() {
+            Slot expired = futureSlot();
+            expired.setExamDate(LocalDate.now().minusDays(1));
+            when(slotMapper.selectById(slotId)).thenReturn(expired);
+
+            assertThatThrownBy(() -> service.book(patientId, packageId, slotId))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("号源已过期");
+
+            verify(slotMapper, never()).incrementBooked(any());
+            verify(appointmentMapper, never()).insert(isA(Appointment.class));
+            verify(publisher, never()).publishEvent(any());
+        }
+
+        @Test
         @DisplayName("并发:第一个请求成功,第二个号源已满")
         void book_concurrent_oneSucceeds() {
+            when(slotMapper.selectById(slotId)).thenReturn(futureSlot());
             when(itemMapper.selectList(any())).thenReturn(List.of(
                     item("采血室", "血常规", 1),
                     item("B超室", "腹部B超", 2)));

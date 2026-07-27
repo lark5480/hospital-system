@@ -350,10 +350,14 @@ COMMENT ON COLUMN pharmacy.prescription_item.unit_price         IS '单价';
 COMMENT ON COLUMN pharmacy.prescription_item.status             IS '明细状态:PENDING/DISPENSED/CANCELLED';
 
 -- ===================== C端演示患者 =====================
--- patient01(手机号 13800000000):与 admin01 员工同手机号,迁移后 sys_user 同时挂 ADMIN + PATIENT,演示「同一手机号多角色」。
+-- 双角色演示账号(手机号 13800000000):与 admin01 员工同手机号,迁移后 sys_user 同时挂 ADMIN + PATIENT,演示「同一手机号多角色」。
+-- username = 手机号(与 PatientService.register 约定一致,JWT sub=phone → /me 按 username 反查患者)。
 INSERT INTO patient.patient (name, gender, birthday, phone, username)
-SELECT '演示患者', 'M', '1990-01-01', '13800000000', 'patient01'
-WHERE NOT EXISTS (SELECT 1 FROM patient.patient WHERE phone = '13800000000' OR username = 'patient01');
+SELECT '演示患者', 'M', '1990-01-01', '13800000000', '13800000000'
+WHERE NOT EXISTS (SELECT 1 FROM patient.patient WHERE phone = '13800000000' OR username = '13800000000');
+
+-- 修正历史数据:旧库中 username='patient01' 的患者行改为手机号(否则 JWT sub=phone 时 /me 反查不到,C端页面 404)
+UPDATE patient.patient SET username = '13800000000' WHERE phone = '13800000000' AND username = 'patient01';
 
 -- 纯患者演示账号(手机号 13700000000):独立于员工/管理员,仅 PATIENT 角色。
 -- username = 手机号(与 PatientService.register 约定一致,JWT sub=phone → /me 按 username 反查患者)。
@@ -455,6 +459,10 @@ CREATE TABLE IF NOT EXISTS report.record (
 );
 ALTER TABLE report.record ADD COLUMN IF NOT EXISTS patient_id BIGINT;
 COMMENT ON COLUMN report.record.patient_id IS '患者ID(C端报告查询)';
+
+-- 体检报告与预约关联:溯源 + 防止同一预约重复出报告(requeue 护栏依据)
+ALTER TABLE report.record ADD COLUMN IF NOT EXISTS appointment_id BIGINT;
+COMMENT ON COLUMN report.record.appointment_id IS '关联体检预约ID(EXAM 报告溯源/防重复出报告)';
 
 -- 报告 PDF:MinIO 对象名与生成状态
 ALTER TABLE report.record ADD COLUMN IF NOT EXISTS file_id VARCHAR(300);
@@ -575,20 +583,21 @@ WHERE p.name = '深度甄选套餐'
   AND NOT EXISTS (SELECT 1 FROM booking.exam_item ei WHERE ei.package_id = p.id AND ei.name = '胸部CT');
 
 -- 基础套餐号源:上午 capacity=2(可演示正常预约),下午 capacity=1(连约两次即触发"号源已满")
+-- 相对日期(CURRENT_DATE):任何时间建库/启动都不产生过期号源;每天启动自动补当天号源(幂等)
 INSERT INTO booking.slot (package_id, exam_date, period, capacity, booked)
-SELECT p.id, DATE '2026-07-10', 'AM', 2, 0 FROM booking.exam_package p
+SELECT p.id, CURRENT_DATE, 'AM', 2, 0 FROM booking.exam_package p
 WHERE p.name = '基础健康套餐'
-  AND NOT EXISTS (SELECT 1 FROM booking.slot s WHERE s.package_id = p.id AND s.exam_date = DATE '2026-07-10' AND s.period = 'AM');
+  AND NOT EXISTS (SELECT 1 FROM booking.slot s WHERE s.package_id = p.id AND s.exam_date = CURRENT_DATE AND s.period = 'AM');
 
 INSERT INTO booking.slot (package_id, exam_date, period, capacity, booked)
-SELECT p.id, DATE '2026-07-10', 'PM', 1, 0 FROM booking.exam_package p
+SELECT p.id, CURRENT_DATE, 'PM', 1, 0 FROM booking.exam_package p
 WHERE p.name = '基础健康套餐'
-  AND NOT EXISTS (SELECT 1 FROM booking.slot s WHERE s.package_id = p.id AND s.exam_date = DATE '2026-07-10' AND s.period = 'PM');
+  AND NOT EXISTS (SELECT 1 FROM booking.slot s WHERE s.package_id = p.id AND s.exam_date = CURRENT_DATE AND s.period = 'PM');
 
 INSERT INTO booking.slot (package_id, exam_date, period, capacity, booked)
-SELECT p.id, DATE '2026-07-11', 'AM', 3, 0 FROM booking.exam_package p
+SELECT p.id, CURRENT_DATE + 1, 'AM', 3, 0 FROM booking.exam_package p
 WHERE p.name = '深度甄选套餐'
-  AND NOT EXISTS (SELECT 1 FROM booking.slot s WHERE s.package_id = p.id AND s.exam_date = DATE '2026-07-11' AND s.period = 'AM');
+  AND NOT EXISTS (SELECT 1 FROM booking.slot s WHERE s.package_id = p.id AND s.exam_date = CURRENT_DATE + 1 AND s.period = 'AM');
 
 -- ===================== 组织域种子数据(科室 + 员工) =====================
 INSERT INTO org.department (name, code, description)
@@ -838,17 +847,12 @@ FROM platform.menu p WHERE p.key = 'org'
 
 -- 患者服务子菜单
 INSERT INTO platform.menu (parent_id, key, title, path, icon, sort_order, visible)
-SELECT p.id, 'patient-registration', '门诊挂号', '/patient/registration', 'Ticket', 0, true
-FROM platform.menu p WHERE p.key = 'patient-service'
-  AND NOT EXISTS (SELECT 1 FROM platform.menu WHERE key = 'patient-registration');
-
-INSERT INTO platform.menu (parent_id, key, title, path, icon, sort_order, visible)
-SELECT p.id, 'patient-booking', '套餐预约', '/patient/booking', 'Tickets', 1, true
+SELECT p.id, 'patient-booking', '套餐预约', '/patient/booking', 'Tickets', 0, true
 FROM platform.menu p WHERE p.key = 'patient-service'
   AND NOT EXISTS (SELECT 1 FROM platform.menu WHERE key = 'patient-booking');
 
 INSERT INTO platform.menu (parent_id, key, title, path, icon, sort_order, visible)
-SELECT p.id, 'patient-appointments', '我的预约', '/patient/appointments', 'Calendar', 2, true
+SELECT p.id, 'patient-appointments', '我的预约', '/patient/appointments', 'Calendar', 1, true
 FROM platform.menu p WHERE p.key = 'patient-service'
   AND NOT EXISTS (SELECT 1 FROM platform.menu WHERE key = 'patient-appointments');
 
@@ -948,10 +952,6 @@ SELECT id, 'patient:booking' FROM platform.menu WHERE key = 'patient-service'
   AND NOT EXISTS (SELECT 1 FROM platform.menu_authority ma JOIN platform.menu m ON m.id = ma.menu_id WHERE m.key = 'patient-service' AND ma.authority = 'patient:booking');
 
 INSERT INTO platform.menu_authority (menu_id, authority)
-SELECT id, 'patient:booking' FROM platform.menu WHERE key = 'patient-registration'
-  AND NOT EXISTS (SELECT 1 FROM platform.menu_authority ma JOIN platform.menu m ON m.id = ma.menu_id WHERE m.key = 'patient-registration' AND ma.authority = 'patient:booking');
-
-INSERT INTO platform.menu_authority (menu_id, authority)
 SELECT id, 'patient:booking' FROM platform.menu WHERE key = 'patient-booking'
   AND NOT EXISTS (SELECT 1 FROM platform.menu_authority ma JOIN platform.menu m ON m.id = ma.menu_id WHERE m.key = 'patient-booking' AND ma.authority = 'patient:booking');
 
@@ -982,7 +982,6 @@ UPDATE platform.menu SET icon = 'Tickets' WHERE key = 'patient-appointment' AND 
 UPDATE platform.menu SET icon = 'OfficeBuilding' WHERE key = 'org' AND icon IS NULL;
 UPDATE platform.menu SET icon = 'Folder' WHERE key = 'files' AND icon IS NULL;
 UPDATE platform.menu SET icon = 'User' WHERE key = 'patient-service' AND icon IS NULL;
-UPDATE platform.menu SET icon = 'Ticket' WHERE key = 'patient-registration' AND icon IS NULL;
 
 -- ===================== C端种子报告数据 =====================
 INSERT INTO report.record (visit_id, patient_id, type, title, content, doctor_id, status, created_at, published_at)
@@ -994,7 +993,7 @@ SELECT null, p.id, 'EXAM', '基础健康体检报告', E'## 体检总结
 **腹部B超**:未见异常
 
 **结论**:健康,建议定期复查。', 1, 'PUBLISHED', now(), now()
-FROM patient.patient p WHERE p.username = 'patient01'
+FROM patient.patient p WHERE p.phone = '13800000000'
   AND NOT EXISTS (SELECT 1 FROM report.record r WHERE r.title = '基础健康体检报告');
 
 -- ===================== 结构化病历 =====================

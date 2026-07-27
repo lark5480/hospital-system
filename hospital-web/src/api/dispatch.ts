@@ -1,6 +1,5 @@
+import type { ExamTask, QueueBoardRow } from '@/types/dispatch'
 import http from './http'
-import type { QueueBoardRow } from '@/types/dispatch'
-import type { ExamTask } from '@/types/dispatch'
 
 export function getMyQueue() {
   return http.get<ExamTask[]>('/core/dispatch/my-queue').then((r) => r.data)
@@ -40,4 +39,9 @@ export function reorderTail(id: number) {
 /** 跳过:放弃某任务置 SKIPPED。 */
 export function skipTask(id: number) {
   return http.post<void>(`/core/dispatch/tasks/${id}/skip`).then((r) => r.data)
+}
+
+/** 重新排队:将已跳过任务恢复为待检并排到队尾(患者去而复返)。 */
+export function requeueTask(id: number) {
+  return http.post<void>(`/core/dispatch/tasks/${id}/requeue`).then((r) => r.data)
 }
