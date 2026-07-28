@@ -22,9 +22,13 @@ import com.hospital.core.report.application.ReportService;
 import com.hospital.core.report.domain.Report;
 import com.hospital.core.report.infrastructure.FileServiceClient;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
+@Tag(name = "患者管理", description = "患者信息查询、注册与报告下载")
 @RestController
 @RequiredArgsConstructor
 @Slf4j
@@ -35,6 +39,7 @@ public class PatientController {
     private final ReportPdfGenerator reportPdfGenerator;
     private final FileServiceClient fileServiceClient;
 
+    @Operation(summary = "查询当前患者报告列表")
     @GetMapping("/api/patient/reports")
     public ResponseEntity<List<Report>> myReports() {
         String username = CurrentUserResolver.resolveUsername();
@@ -43,8 +48,9 @@ public class PatientController {
         return ResponseEntity.ok(reportService.listByPatient(patient.getId()));
     }
 
+    @Operation(summary = "下载报告PDF")
     @GetMapping("/api/patient/reports/{id}/download")
-    public ResponseEntity<byte[]> downloadReport(@PathVariable Long id) {
+    public ResponseEntity<byte[]> downloadReport(@Parameter(description = "报告ID") @PathVariable Long id) {
         String username = CurrentUserResolver.resolveUsername();
         Patient patient = patientService.findByUsername(username);
         if (patient == null) return ResponseEntity.notFound().build();
@@ -91,16 +97,19 @@ public class PatientController {
         }
     }
 
+    @Operation(summary = "患者注册")
     @PostMapping("/api/patient/register")
     public ResponseEntity<PatientRegisterResponse> register(@RequestBody PatientRegisterRequest request) {
         return ResponseEntity.ok(patientService.register(request.toDomain()));
     }
 
+    @Operation(summary = "查询患者列表")
     @GetMapping("/api/patient")
     public ResponseEntity<List<Patient>> list() {
         return ResponseEntity.ok(patientService.list());
     }
 
+    @Operation(summary = "获取当前患者信息")
     @GetMapping("/api/patient/me")
     public ResponseEntity<Patient> me() {
         String username = CurrentUserResolver.resolveUsername();
@@ -109,18 +118,21 @@ public class PatientController {
         return ResponseEntity.ok(patient);
     }
 
+    @Operation(summary = "按关键字搜索患者")
     @GetMapping("/api/patient/search")
-    public ResponseEntity<List<Patient>> search(@RequestParam String keyword) {
+    public ResponseEntity<List<Patient>> search(@Parameter(description = "搜索关键字") @RequestParam String keyword) {
         return ResponseEntity.ok(patientService.search(keyword));
     }
 
+    @Operation(summary = "获取患者详情")
     @GetMapping("/api/patient/{id}")
-    public ResponseEntity<Patient> get(@PathVariable Long id) {
+    public ResponseEntity<Patient> get(@Parameter(description = "患者ID") @PathVariable Long id) {
         return ResponseEntity.ok(patientService.get(id));
     }
 
+    @Operation(summary = "更新患者信息")
     @PutMapping("/api/patient/{id}")
-    public ResponseEntity<Patient> update(@PathVariable Long id, @RequestBody Patient patient) {
+    public ResponseEntity<Patient> update(@Parameter(description = "患者ID") @PathVariable Long id, @RequestBody Patient patient) {
         return ResponseEntity.ok(patientService.update(id, patient));
     }
 }

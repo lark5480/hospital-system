@@ -1,19 +1,27 @@
 package com.hospital.core.clinical.api;
 
+import java.util.List;
+
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RestController;
+
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.hospital.core.clinical.application.VisitService;
 import com.hospital.core.clinical.domain.Charge;
 import com.hospital.core.clinical.infrastructure.ChargeMapper;
 import com.hospital.core.patient.application.PatientService;
+
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.AllArgsConstructor;
 import lombok.Data;
-import org.springframework.http.ResponseEntity;
-import org.springframework.security.access.prepost.PreAuthorize;
-import org.springframework.web.bind.annotation.*;
 
-import java.util.List;
-import java.util.Map;
-
+@Tag(name = "收费管理", description = "收费、查询待缴/已缴费用")
 @RestController
 public class ChargeController {
 
@@ -27,12 +35,14 @@ public class ChargeController {
         this.patientService = patientService;
     }
 
+    @Operation(summary = "查询待缴费列表")
     @GetMapping("/api/core/charges/unpaid")
     @PreAuthorize("hasAuthority('charge:pay')")
     public ResponseEntity<List<ChargeVO>> unpaid() {
         return ResponseEntity.ok(listByStatus("UNPAID"));
     }
 
+    @Operation(summary = "查询已缴费列表")
     @GetMapping("/api/core/charges/paid")
     @PreAuthorize("hasAuthority('charge:pay')")
     public ResponseEntity<List<ChargeVO>> paid() {
@@ -63,9 +73,10 @@ public class ChargeController {
         return result;
     }
 
+    @Operation(summary = "就诊缴费")
     @PostMapping("/api/core/charges/{visitId}/pay")
     @PreAuthorize("hasAuthority('charge:pay')")
-    public ResponseEntity<?> pay(@PathVariable Long visitId) {
+    public ResponseEntity<?> pay(@Parameter(description = "就诊ID") @PathVariable Long visitId) {
         visitService.pay(visitId);
         return ResponseEntity.ok().build();
     }
@@ -77,13 +88,4 @@ public class ChargeController {
         private String patientName;
     }
 
-    @ExceptionHandler(IllegalArgumentException.class)
-    public ResponseEntity<Map<String, String>> handleNotFound(IllegalArgumentException ex) {
-        return ResponseEntity.status(404).body(Map.of("message", ex.getMessage()));
-    }
-
-    @ExceptionHandler(IllegalStateException.class)
-    public ResponseEntity<Map<String, String>> handleConflict(IllegalStateException ex) {
-        return ResponseEntity.status(409).body(Map.of("message", ex.getMessage()));
-    }
 }

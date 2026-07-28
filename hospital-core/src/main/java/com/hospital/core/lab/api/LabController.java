@@ -5,7 +5,6 @@ import java.util.Map;
 
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
-import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -22,8 +21,12 @@ import com.hospital.core.org.domain.Staff;
 import com.hospital.core.platform.annotation.AuditLog;
 import com.hospital.core.platform.security.CurrentUserResolver;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 
+@Tag(name = "检验管理", description = "检验申请的创建、查询、结果录入与取消")
 @RestController
 @RequiredArgsConstructor
 public class LabController {
@@ -31,20 +34,23 @@ public class LabController {
     private final LabService labService;
     private final StaffService staffService;
 
+    @Operation(summary = "查询检验申请列表")
     @GetMapping("/api/lab/requisitions")
     public ResponseEntity<List<LabRequisitionListItem>> list(
-            @RequestParam(required = false) String status,
-            @RequestParam(required = false) Long deptId) {
+            @Parameter(description = "申请状态") @RequestParam(required = false) String status,
+            @Parameter(description = "科室ID") @RequestParam(required = false) Long deptId) {
         return ResponseEntity.ok(labService.listWithDetail(status, deptId));
     }
 
+    @Operation(summary = "获取检验申请详情")
     @GetMapping("/api/lab/requisitions/{id}")
-    public ResponseEntity<LabRequisitionDetail> get(@PathVariable Long id) {
+    public ResponseEntity<LabRequisitionDetail> get(@Parameter(description = "检验申请ID") @PathVariable Long id) {
         LabRequisitionDetail detail = labService.getDetail(id);
         if (detail == null) return ResponseEntity.notFound().build();
         return ResponseEntity.ok(detail);
     }
 
+    @Operation(summary = "创建检验申请")
     @PreAuthorize("hasAuthority('visit:entry')")
     @AuditLog(action = "CREATE_REQUISITION")
     @PostMapping("/api/lab/requisitions")
@@ -53,11 +59,12 @@ public class LabController {
                 req.getVisitId(), req.getDoctorId(), req.getOrderIds()));
     }
 
+    @Operation(summary = "录入检验结果")
     @PreAuthorize("hasAuthority('order:execute')")
     @AuditLog(action = "SUBMIT_RESULTS")
     @PostMapping("/api/lab/requisitions/{id}/results")
     public ResponseEntity<?> submitResults(
-            @PathVariable Long id, @RequestBody SubmitResultsRequest req) {
+            @Parameter(description = "检验申请ID") @PathVariable Long id, @RequestBody SubmitResultsRequest req) {
         // 校验执行科室:只有申请所属科室的人员才能执行
         Long currentDeptId = currentDeptId();
         if (currentDeptId != null) {
@@ -78,10 +85,11 @@ public class LabController {
         return ResponseEntity.ok(labService.submitResults(id, req.getTechnicianId(), entries));
     }
 
+    @Operation(summary = "取消检验申请")
     @PreAuthorize("hasAuthority('order:execute')")
     @AuditLog(action = "CANCEL_REQUISITION")
     @PostMapping("/api/lab/requisitions/{id}/cancel")
-    public ResponseEntity<?> cancel(@PathVariable Long id) {
+    public ResponseEntity<?> cancel(@Parameter(description = "检验申请ID") @PathVariable Long id) {
         // 校验执行科室:只有申请所属科室的人员才能取消
         Long currentDeptId = currentDeptId();
         if (currentDeptId != null) {
@@ -91,16 +99,6 @@ public class LabController {
             }
         }
         return ResponseEntity.ok(labService.cancel(id));
-    }
-
-    @ExceptionHandler(IllegalArgumentException.class)
-    public ResponseEntity<Map<String, String>> handleNotFound(IllegalArgumentException ex) {
-        return ResponseEntity.status(404).body(Map.of("message", ex.getMessage()));
-    }
-
-    @ExceptionHandler(IllegalStateException.class)
-    public ResponseEntity<Map<String, String>> handleConflict(IllegalStateException ex) {
-        return ResponseEntity.status(409).body(Map.of("message", ex.getMessage()));
     }
 
     private Long currentDeptId() {

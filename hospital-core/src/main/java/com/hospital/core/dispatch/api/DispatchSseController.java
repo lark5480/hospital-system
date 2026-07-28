@@ -14,12 +14,16 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import com.hospital.core.dispatch.application.BoardUpdateEvent;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.extern.slf4j.Slf4j;
 
 /**
  * 排队看板SSE推送端点。
  * 前端订阅后，看板数据变更时实时推送，无需轮询。
  */
+@Tag(name = "分诊排队", description = "排队看板SSE实时推送")
 @Slf4j
 @RestController
 @RequestMapping("/api/core/dispatch/sse")
@@ -27,12 +31,9 @@ public class DispatchSseController {
 
     private final Set<SseEmitter> emitters = new CopyOnWriteArraySet<>();
 
-    /**
-     * 订阅看板数据变更推送。
-     * @param station 可选，按工位过滤推送（null=全部工位）
-     */
+    @Operation(summary = "订阅看板数据变更推送")
     @GetMapping(value = "/subscribe", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter subscribe(@RequestParam(required = false) String station) {
+    public SseEmitter subscribe(@Parameter(description = "工位名称，可选，按工位过滤推送") @RequestParam(required = false) String station) {
         SseEmitter emitter = new SseEmitter(0L); // 无超时
         emitter.onCompletion(() -> emitters.remove(emitter));
         emitter.onTimeout(() -> emitters.remove(emitter));

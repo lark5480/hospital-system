@@ -1,7 +1,7 @@
 # 医院信息系统 · hospital-system
 
 > 个人学习 / 求职作品向项目。用 AI 辅助实践医院业务知识,循序渐进本地运行(不上公网/不付费服务器),DB 用 Oracle 转向 PostgreSQL。
-> 结构详见 [`docs/architecture-design.md`](docs/architecture-design.md)(含 ADR-001~020)。
+> 结构详见 [`docs/architecture-design.md`](docs/architecture-design.md)，架构决策记录详见 [`docs/adr/`](docs/adr/README.md)。
 
 ## 技术栈
 
@@ -108,10 +108,6 @@ cd hospital-web
 npm install && npm run dev              # :5173
 ```
 
-### 认证模式
-
-统一真登录(手机号 + 密码,自管 JWT),无需额外配置;启动后访问页面会自动跳转登录页,用下表测试账号登录即可。
-
 ### 测试账号(统一账号:手机号 + 密码,默认 123456)
 
 | 手机号 | 密码 | 角色 | 能干啥 |
@@ -126,6 +122,19 @@ npm install && npm run dev              # :5173
 
 > 用医生手机号登录后点击"收费"按钮会被 403,这是七权分立的正确体现。
 > `13800000000` 同时挂 ADMIN 与 PATIENT 两角色,菜单 = 两角色权限并集,正好演示「同一手机号多角色」。
+
+### API 文档
+
+启动后端服务后，可通过 Swagger UI 查看和测试 API：
+
+- 直接访问 hospital-core：http://localhost:8101/swagger-ui.html
+- 通过 API 网关：http://localhost:8104/swagger-ui.html
+
+所有 Controller 已添加 OpenAPI 注解（@Tag、@Operation、@Parameter），文档按模块分组展示。
+
+### 认证模式
+
+统一真登录(手机号 + 密码,自管 JWT),无需额外配置;启动后访问页面会自动跳转登录页,用测试账号登录即可。
 
 ## RBAC 权限模型(统一账号 + 多角色)
 

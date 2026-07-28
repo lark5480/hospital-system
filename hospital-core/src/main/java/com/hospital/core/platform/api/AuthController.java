@@ -1,23 +1,32 @@
 package com.hospital.core.platform.api;
 
-import com.hospital.core.org.application.AuthService;
-import lombok.RequiredArgsConstructor;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.util.LinkedHashMap;
-import java.util.Map;
+import com.hospital.core.org.application.AuthService;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.tags.Tag;
+import lombok.RequiredArgsConstructor;
+
+@Tag(name = "平台功能", description = "用户登录认证")
 @RestController
 @RequiredArgsConstructor
 public class AuthController {
 
     private final AuthService authService;
 
+    @Operation(summary = "用户登录")
     @PostMapping("/api/auth/login")
-    public ResponseEntity<?> login(@RequestParam String phone, @RequestParam String password) {
+    public ResponseEntity<?> login(
+            @Parameter(description = "手机号") @RequestParam String phone,
+            @Parameter(description = "密码") @RequestParam String password) {
         AuthService.LoginResult result = authService.login(phone, password);
         if (result == null) {
             return ResponseEntity.status(401).body(Map.of("error", "手机号或密码错误"));

@@ -7,14 +7,21 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.crypto.password.PasswordEncoder;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RestController;
 
 import com.hospital.core.platform.config.DataInitializer;
 import com.hospital.core.platform.domain.SysUser;
 import com.hospital.core.platform.infrastructure.SysUserMapper;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 
+@Tag(name = "平台功能", description = "密码修改与重置")
 @RestController
 @RequiredArgsConstructor
 public class PasswordController {
@@ -22,6 +29,7 @@ public class PasswordController {
     private final SysUserMapper sysUserMapper;
     private final PasswordEncoder passwordEncoder;
 
+    @Operation(summary = "修改当前用户密码")
     @PostMapping("/api/auth/password/change")
     public ResponseEntity<?> changePassword(@RequestBody Map<String, String> body) {
         String oldPassword = body.getOrDefault("oldPassword", "");
@@ -50,9 +58,10 @@ public class PasswordController {
         return ResponseEntity.ok(Map.of("message", "密码已修改"));
     }
 
+    @Operation(summary = "管理员重置用户密码")
     @PostMapping("/api/core/iam/users/{id}/reset-password")
     @PreAuthorize("hasAuthority('system:admin')")
-    public ResponseEntity<?> resetPassword(@PathVariable Long id) {
+    public ResponseEntity<?> resetPassword(@Parameter(description = "用户ID") @PathVariable Long id) {
         SysUser user = sysUserMapper.selectById(id);
         if (user == null) {
             return ResponseEntity.status(404).body(Map.of("error", "用户不存在"));

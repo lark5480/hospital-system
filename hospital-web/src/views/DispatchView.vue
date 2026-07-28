@@ -30,25 +30,59 @@ function onStationChange() {
 
 /** 自动叫号:若已选工位则对该工位叫号,否则对所有工位各叫一个。 */
 async function handleCallNext() {
-  const targets = store.stationFilter ? [store.stationFilter] : stations.value
-  await Promise.all(targets.map((s) => callNext(s)))
-  await store.fetchBoard()
+  try {
+    const targets = store.stationFilter ? [store.stationFilter] : stations.value
+    await Promise.all(targets.map((s) => callNext(s)))
+    await store.fetchBoard()
+    ElMessage.success('叫号成功')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.error || '叫号失败')
+  }
 }
 
 async function handleReorder(id: number) {
-  await reorderTail(id)
-  await store.fetchBoard()
+  try {
+    await reorderTail(id)
+    await store.fetchBoard()
+    ElMessage.success('已标记过号')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.error || '过号失败')
+  }
 }
 
 async function handleSkip(id: number) {
-  await skipTask(id)
-  await store.fetchBoard()
+  try {
+    await skipTask(id)
+    await store.fetchBoard()
+    ElMessage.success('已跳过')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.error || '跳过失败')
+  }
+}
+
+async function handleStart(id: number) {
+  try {
+    await store.start(id)
+    ElMessage.success('已开始')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.error || '开始任务失败')
+  }
+}
+
+async function handleComplete(id: number) {
+  try {
+    await store.complete(id)
+    ElMessage.success('已完成')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.error || '完成任务失败')
+  }
 }
 
 /** 已跳过 → 重新排队(患者去而复返);预约已出报告时后端拒绝,展示原因。 */
 async function handleRequeue(id: number) {
   try {
     await requeueTask(id)
+    ElMessage.success('已重新排队')
   } catch (e: any) {
     ElMessage.warning(e?.response?.data?.error || '重新排队失败')
   }
@@ -122,10 +156,10 @@ function setupSSE() {
           <div class="task-foot">
             <span class="patient">{{ t.patientName || '—' }}</span>
             <div class="task-actions">
-              <el-button v-if="t.status === 'PENDING'" type="primary" size="small" @click="store.start(t.id)">
+              <el-button v-if="t.status === 'PENDING'" type="primary" size="small" @click="handleStart(t.id)">
                 开始
               </el-button>
-              <el-button v-if="t.status === 'IN_PROGRESS'" type="success" size="small" @click="store.complete(t.id)">
+              <el-button v-if="t.status === 'IN_PROGRESS'" type="success" size="small" @click="handleComplete(t.id)">
                 完成
               </el-button>
               <el-button v-if="t.status === 'PENDING'" size="small" plain @click="handleReorder(t.id)">

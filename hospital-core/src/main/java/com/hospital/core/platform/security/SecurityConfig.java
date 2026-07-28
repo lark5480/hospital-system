@@ -1,8 +1,13 @@
 package com.hospital.core.platform.security;
 
-import lombok.RequiredArgsConstructor;
+import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.MediaType;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
@@ -15,7 +20,10 @@ import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
-import java.util.List;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import jakarta.servlet.http.HttpServletResponse;
+import lombok.RequiredArgsConstructor;
 
 /**
  * 统一 JWT 安全配置(无外部 IdP 依赖,自管 token)。
@@ -32,6 +40,7 @@ import java.util.List;
 public class SecurityConfig {
 
     private final JwtAuthFilter jwtAuthFilter;
+    private final ObjectMapper objectMapper;
 
     /** 密码加密器(BCrypt)。 */
     @Bean
@@ -61,6 +70,27 @@ public class SecurityConfig {
                 .requestMatchers("/api/auth/**", "/actuator/**", "/fhir/**",
                         "/swagger-ui/**", "/swagger-ui.html", "/api-docs/**", "/v3/api-docs/**").permitAll()
                 .anyRequest().authenticated())
+            .exceptionHandling(ex -> ex
+                .authenticationEntryPoint((request, response, authException) -> {
+                    response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+                    response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+                    Map<String, Object> body = new LinkedHashMap<>();
+                    body.put("timestamp", LocalDateTime.now().toString());
+                    body.put("status", 401);
+                    body.put("error", "未认证");
+                    body.put("message", "请先登录");
+                    objectMapper.writeValue(response.getOutputStream(), body);
+                })
+                .accessDeniedHandler((request, response, accessDeniedException) -> {
+                    response.setStatus(HttpServletResponse.SC_FORBIDDEN);
+                    response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+                    Map<String, Object> body = new LinkedHashMap<>();
+                    body.put("timestamp", LocalDateTime.now().toString());
+                    body.put("status", 403);
+                    body.put("error", "权限不足");
+                    body.put("message", accessDeniedException.getMessage());
+                    objectMapper.writeValue(response.getOutputStream(), body);
+                }))
             .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
         return http.build();
     }

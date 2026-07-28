@@ -20,6 +20,16 @@ app.use(ElementPlus)
 bindRouter(router)
 bindHttpRouter(router)
 
+// 全局错误处理器
+app.config.errorHandler = (err, _instance, info) => {
+  console.error('[Global Error]', err, info)
+}
+
+// 未处理的 Promise rejection
+window.addEventListener('unhandledrejection', (event) => {
+  console.error('[Unhandled Rejection]', event.reason)
+})
+
 // 认证初始化:从 localStorage 恢复登录态(刷新免登)。
 // 完成后挂路由并 mount,确保路由守卫拿到的 auth 状态已就绪。
 initAuth().finally(() => {

@@ -136,6 +136,19 @@ Vue 3 + TypeScript + Vite 5 单页应用，配 Element Plus：
 - **认证：** 统一自管 JWT 真登录（手机号 + 密码），登录态持久化到 localStorage，刷新免登
 - **账号自助：** 登录页（`/login` 独立路由）+ 右上角下拉（修改密码）+ 忘记密码引导（联系管理员重置）
 
+### API 文档
+
+启动后端服务后，可通过 Swagger UI 查看和测试 API：
+- 直接访问：http://localhost:8101/swagger-ui.html
+- 通过网关：http://localhost:8104/swagger-ui.html
+
+所有 Controller 已添加 OpenAPI 注解（@Tag、@Operation、@Parameter）。
+
+### 错误处理
+
+- **后端**：`GlobalExceptionHandler` 统一捕获异常，返回标准 JSON 格式 `{timestamp, status, error, message}`
+- **前端**：`ErrorBoundary.vue` 错误边界 + `main.ts` 全局 errorHandler + Axios 拦截器统一提示
+
 ### 测试约定
 
 - JUnit 5 + Mockito（`@ExtendWith(MockitoExtension.class)`）+ AssertJ（`assertThat`）
