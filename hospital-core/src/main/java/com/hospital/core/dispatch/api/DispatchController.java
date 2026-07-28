@@ -1,12 +1,9 @@
 package com.hospital.core.dispatch.api;
 
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
-import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -19,6 +16,11 @@ import com.hospital.core.dispatch.domain.QueueBoard;
 import com.hospital.core.patient.application.PatientService;
 import com.hospital.core.platform.security.CurrentUserResolver;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.tags.Tag;
+
+@Tag(name = "分诊排队", description = "排队叫号、任务调度与看板管理")
 @RestController
 public class DispatchController {
 
@@ -30,6 +32,7 @@ public class DispatchController {
         this.patientService = patientService;
     }
 
+    @Operation(summary = "查询当前患者排队队列")
     @GetMapping("/api/core/dispatch/my-queue")
     public ResponseEntity<List<ExamTask>> myQueue() {
         String username = CurrentUserResolver.resolveUsername();
@@ -38,70 +41,65 @@ public class DispatchController {
         return ResponseEntity.ok(dispatchService.myQueue(patient.getId()));
     }
 
+    @Operation(summary = "查询排队看板")
     @GetMapping("/api/core/dispatch/board")
-    public ResponseEntity<List<QueueBoard>> board(@RequestParam(required = false) String station) {
+    public ResponseEntity<List<QueueBoard>> board(@Parameter(description = "工位名称") @RequestParam(required = false) String station) {
         return ResponseEntity.ok(dispatchService.board(station));
     }
 
+    @Operation(summary = "开始检查任务")
     @PreAuthorize("hasAnyAuthority('visit:entry','visit:audit','order:execute','charge:pay','system:admin')")
     @PostMapping("/api/core/dispatch/{id}/start")
-    public ResponseEntity<Void> start(@PathVariable Long id) {
+    public ResponseEntity<Void> start(@Parameter(description = "任务ID") @PathVariable Long id) {
         dispatchService.start(id);
         return ResponseEntity.ok().build();
     }
 
+    @Operation(summary = "完成检查任务")
     @PreAuthorize("hasAnyAuthority('visit:entry','visit:audit','order:execute','charge:pay','system:admin')")
     @PostMapping("/api/core/dispatch/{id}/complete")
-    public ResponseEntity<Void> complete(@PathVariable Long id) {
+    public ResponseEntity<Void> complete(@Parameter(description = "任务ID") @PathVariable Long id) {
         dispatchService.complete(id);
         return ResponseEntity.ok().build();
     }
 
+    @Operation(summary = "叫下一位患者")
     @PreAuthorize("hasAnyAuthority('visit:entry','visit:audit','order:execute','charge:pay','system:admin')")
     @PostMapping("/api/core/dispatch/call-next")
-    public ResponseEntity<ExamTask> callNext(@RequestParam String station) {
+    public ResponseEntity<ExamTask> callNext(@Parameter(description = "工位名称") @RequestParam String station) {
         ExamTask called = dispatchService.callNext(station);
         if (called == null) return ResponseEntity.noContent().build();
         return ResponseEntity.ok(called);
     }
 
+    @Operation(summary = "将任务移至队尾")
     @PreAuthorize("hasAnyAuthority('visit:entry','visit:audit','order:execute','charge:pay','system:admin')")
     @PostMapping("/api/core/dispatch/tasks/{id}/reorder-tail")
-    public ResponseEntity<Void> reorderTail(@PathVariable Long id) {
+    public ResponseEntity<Void> reorderTail(@Parameter(description = "任务ID") @PathVariable Long id) {
         dispatchService.reorderToTail(id);
         return ResponseEntity.ok().build();
     }
 
+    @Operation(summary = "跳过任务")
     @PreAuthorize("hasAnyAuthority('visit:entry','visit:audit','order:execute','charge:pay','system:admin')")
     @PostMapping("/api/core/dispatch/tasks/{id}/skip")
-    public ResponseEntity<Void> skip(@PathVariable Long id) {
+    public ResponseEntity<Void> skip(@Parameter(description = "任务ID") @PathVariable Long id) {
         dispatchService.skip(id);
         return ResponseEntity.ok().build();
     }
 
+    @Operation(summary = "重新排队")
     @PreAuthorize("hasAnyAuthority('visit:entry','visit:audit','order:execute','charge:pay','system:admin')")
     @PostMapping("/api/core/dispatch/tasks/{id}/requeue")
-    public ResponseEntity<Void> requeue(@PathVariable Long id) {
+    public ResponseEntity<Void> requeue(@Parameter(description = "任务ID") @PathVariable Long id) {
         dispatchService.requeue(id);
         return ResponseEntity.ok().build();
     }
 
+    @Operation(summary = "查询活跃工位列表")
     @GetMapping("/api/core/dispatch/stations")
     public ResponseEntity<List<String>> stations() {
         return ResponseEntity.ok(dispatchService.listActiveStations());
     }
 
-    @ExceptionHandler(IllegalArgumentException.class)
-    public ResponseEntity<Map<String, String>> handleNotFound(IllegalArgumentException ex) {
-        Map<String, String> body = new HashMap<>();
-        body.put("error", ex.getMessage());
-        return ResponseEntity.status(404).body(body);
-    }
-
-    @ExceptionHandler(IllegalStateException.class)
-    public ResponseEntity<Map<String, String>> handleConflict(IllegalStateException ex) {
-        Map<String, String> body = new HashMap<>();
-        body.put("error", ex.getMessage());
-        return ResponseEntity.status(409).body(body);
-    }
 }

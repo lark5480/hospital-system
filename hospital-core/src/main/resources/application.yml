@@ -6,6 +6,8 @@ server:
 spring:
   application:
     name: hospital-core
+  mvc:
+    throw-exception-if-no-handler-found: true
   datasource:
     url: jdbc:postgresql://${PG_HOST:localhost}:${PG_PORT:5432}/${PG_DB:hospital}
     username: ${PG_USER:postgres}

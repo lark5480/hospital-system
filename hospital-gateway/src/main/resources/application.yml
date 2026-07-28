@@ -57,6 +57,11 @@ spring:
           uri: http://${CORE_HOST:localhost}:8101
           predicates:
             - Path=/fhir/**
+        # Swagger UI & API 文档(转发到 core)
+        - id: core-swagger-ui
+          uri: http://${CORE_HOST:localhost}:8101
+          predicates:
+            - Path=/swagger-ui.html,/swagger-ui/**,/api-docs/**,/v3/api-docs/**
 
 logging:
   level:

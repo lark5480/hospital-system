@@ -201,6 +201,19 @@ Vue 3 + TypeScript + Vite 5 单页应用，配 Element Plus：
 - **接口：** `api/http.ts` 中的 Axios 实例（带 Bearer 令牌拦截器），按业务域划分的 API 模块
 - **认证：** 统一自管 JWT 真登录（手机号 + 密码），登录态持久化到 localStorage，刷新免登
 
+### API 文档
+
+启动后端服务后，可通过 Swagger UI 查看和测试 API：
+- 直接访问：http://localhost:8101/swagger-ui.html
+- 通过网关：http://localhost:8104/swagger-ui.html
+
+所有 Controller 已添加 OpenAPI 注解（@Tag、@Operation、@Parameter）。
+
+### 错误处理
+
+- **后端**：`GlobalExceptionHandler` 统一捕获异常，返回标准 JSON 格式 `{timestamp, status, error, message}`
+- **前端**：`ErrorBoundary.vue` 错误边界 + `main.ts` 全局 errorHandler + Axios 拦截器统一提示
+
 ### 测试约定
 
 - JUnit 5 + Mockito（`@ExtendWith(MockitoExtension.class)`）+ AssertJ（`assertThat`）

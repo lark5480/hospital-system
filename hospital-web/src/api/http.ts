@@ -1,5 +1,5 @@
-import axios, { type AxiosError } from 'axios'
 import { useAuthStore } from '@/stores/auth'
+import axios, { type AxiosError } from 'axios'
 import type { Router } from 'vue-router'
 
 // 统一走 Gateway 的 /api 前缀;开发期由 vite.config.ts 的 proxy 转发到 :8104。
@@ -27,12 +27,17 @@ http.interceptors.request.use((config) => {
 http.interceptors.response.use(
   (response) => response,
   (error: AxiosError) => {
-    if (error.response?.status === 401) {
-      const auth = useAuthStore()
-      auth.token = undefined
-      auth.authenticated = false
-      localStorage.removeItem('hospital_auth')
-      router?.push('/login')
+    if (error.response) {
+      const { status } = error.response
+
+      // 401 时清除过期 token 并跳登录
+      if (status === 401) {
+        const auth = useAuthStore()
+        auth.token = undefined
+        auth.authenticated = false
+        localStorage.removeItem('hospital_auth')
+        router?.push('/login')
+      }
     }
     return Promise.reject(error)
   }
