@@ -88,6 +88,8 @@ clinical/          （示例模块）
 - `platform` 是共享内核——所有模块均可依赖
 - ArchUnit 规则在 `mvn verify` 期间运行，违例即构建失败
 
+关键写操作通过 `@AuditLog` 注解 + `AuditLogAspect` 切面自动记录到 `audit_log` 表，支持 Visit/Department/Staff/Menu/Role/Appointment 等实体。
+
 ### 数据库：按模块划分 schema 隔离
 
 所有表都在同一个 PostgreSQL 16 实例（`hospital` 库）中，按 schema 隔离：
@@ -196,7 +198,7 @@ WAITING（候诊）→ CALLED（已叫号）→ 就诊完成/取消
 Vue 3 + TypeScript + Vite 5 单页应用，配 Element Plus：
 
 - **布局：** `MainLayout.vue`——侧边栏（`el-menu`）+ 顶栏 + 主内容区
-- **路由：** 挂在 MainLayout 下的嵌套路由，25 个视图，`meta.requiresAuth` + 全局守卫
+- **路由：** 挂在 MainLayout 下的嵌套路由，29 个视图，`meta.requiresAuth` + 全局守卫
 - **状态：** 按业务域拆分的 Pinia store（`auth`、`visit`、`notification`、`dispatch`、`menu`、`patient`）
 - **接口：** `api/http.ts` 中的 Axios 实例（带 Bearer 令牌拦截器），按业务域划分的 API 模块
 - **认证：** 统一自管 JWT 真登录（手机号 + 密码），登录态持久化到 localStorage，刷新免登
@@ -211,8 +213,19 @@ Vue 3 + TypeScript + Vite 5 单页应用，配 Element Plus：
 
 ### 错误处理
 
-- **后端**：`GlobalExceptionHandler` 统一捕获异常，返回标准 JSON 格式 `{timestamp, status, error, message}`
+- **后端**：`GlobalExceptionHandler` 统一捕获异常，返回标准 JSON 格式 `{timestamp, status, error, message}`，覆盖以下异常类型：
+  - **400**：`MethodArgumentNotValidException`（@Valid 校验失败）、`ConstraintViolationException`（@Validated 校验失败）、`HttpMessageNotReadableException`（JSON 解析失败）、`MethodArgumentTypeMismatchException`（路径参数类型错误）、`MissingServletRequestParameterException`（缺少必填参数）
+  - **401**：`BadCredentialsException`（认证失败）
+  - **403**：`AccessDeniedException`（权限不足）
+  - **404**：`NoHandlerFoundException`（无匹配 Handler）、`IllegalArgumentException`（业务层资源不存在）
+  - **409**：`IllegalStateException`（业务状态冲突，如未缴费拦截、处方已发药）
+  - **500**：`Exception`（兜底，所有未预期异常）
 - **前端**：`ErrorBoundary.vue` 错误边界 + `main.ts` 全局 errorHandler + Axios 拦截器统一提示
+
+### 输入校验约定
+- Request DTO 使用 Jakarta Validation 注解（@NotNull/@NotBlank/@Pattern 等）
+- Controller 方法参数标注 @Valid 触发校验
+- 校验失败由 GlobalExceptionHandler 统一返回 400
 
 ### 测试约定
 

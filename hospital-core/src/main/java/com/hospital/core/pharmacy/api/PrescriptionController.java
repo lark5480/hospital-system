@@ -22,6 +22,7 @@ import com.hospital.core.platform.security.CurrentUserResolver;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 
 @Tag(name = "药房管理", description = "处方的创建、查询、发药与取消")
@@ -59,7 +60,7 @@ public class PrescriptionController {
     @PreAuthorize("hasAuthority('visit:entry')")
     @AuditLog(action = "CREATE_PRESCRIPTION")
     @PostMapping("/api/pharmacy/prescriptions")
-    public ResponseEntity<Prescription> create(@RequestBody CreatePrescriptionRequest req) {
+    public ResponseEntity<Prescription> create(@Valid @RequestBody CreatePrescriptionRequest req) {
         Prescription p = prescriptionService.createFromVisit(req.getVisitId(), req.getDoctorId());
         return ResponseEntity.ok(p);
     }
@@ -69,7 +70,7 @@ public class PrescriptionController {
     @AuditLog(action = "DISPENSE")
     @PostMapping("/api/pharmacy/prescriptions/{id}/dispense")
     public ResponseEntity<Prescription> dispense(@Parameter(description = "处方ID") @PathVariable Long id,
-            @RequestBody DispenseRequest req) {
+            @Valid @RequestBody DispenseRequest req) {
         Long pharmacistId = resolvePharmacistId();
         return ResponseEntity.ok(prescriptionService.dispense(id, pharmacistId, req.getRemark()));
     }

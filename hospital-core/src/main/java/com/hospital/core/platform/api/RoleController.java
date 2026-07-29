@@ -14,6 +14,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.hospital.core.platform.annotation.AuditLog;
 import com.hospital.core.platform.domain.Role;
 import com.hospital.core.platform.domain.RoleAuthority;
 import com.hospital.core.platform.infrastructure.RoleAuthorityMapper;
@@ -44,6 +45,7 @@ public class RoleController {
         return ResponseEntity.ok(result);
     }
 
+    @AuditLog(action = "SAVE_ROLE_AUTHORITIES")
     @Operation(summary = "保存角色权限")
     @PutMapping("/api/core/iam/roles/{code}/authorities")
     public ResponseEntity<?> saveAuthorities(@Parameter(description = "角色编码") @PathVariable String code, @RequestBody List<String> authorities) {

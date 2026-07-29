@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.hospital.core.platform.annotation.AuditLog;
 import com.hospital.core.platform.config.DataInitializer;
 import com.hospital.core.platform.domain.SysUser;
 import com.hospital.core.platform.infrastructure.SysUserMapper;
@@ -29,6 +30,7 @@ public class PasswordController {
     private final SysUserMapper sysUserMapper;
     private final PasswordEncoder passwordEncoder;
 
+    @AuditLog(action = "CHANGE_PASSWORD")
     @Operation(summary = "修改当前用户密码")
     @PostMapping("/api/auth/password/change")
     public ResponseEntity<?> changePassword(@RequestBody Map<String, String> body) {

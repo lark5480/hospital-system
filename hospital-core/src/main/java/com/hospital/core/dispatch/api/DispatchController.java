@@ -14,6 +14,7 @@ import com.hospital.core.dispatch.application.DispatchService;
 import com.hospital.core.dispatch.domain.ExamTask;
 import com.hospital.core.dispatch.domain.QueueBoard;
 import com.hospital.core.patient.application.PatientService;
+import com.hospital.core.platform.annotation.AuditLog;
 import com.hospital.core.platform.security.CurrentUserResolver;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -47,6 +48,7 @@ public class DispatchController {
         return ResponseEntity.ok(dispatchService.board(station));
     }
 
+    @AuditLog(action = "DISPATCH_START")
     @Operation(summary = "开始检查任务")
     @PreAuthorize("hasAnyAuthority('visit:entry','visit:audit','order:execute','charge:pay','system:admin')")
     @PostMapping("/api/core/dispatch/{id}/start")
@@ -55,6 +57,7 @@ public class DispatchController {
         return ResponseEntity.ok().build();
     }
 
+    @AuditLog(action = "DISPATCH_COMPLETE")
     @Operation(summary = "完成检查任务")
     @PreAuthorize("hasAnyAuthority('visit:entry','visit:audit','order:execute','charge:pay','system:admin')")
     @PostMapping("/api/core/dispatch/{id}/complete")
@@ -63,6 +66,7 @@ public class DispatchController {
         return ResponseEntity.ok().build();
     }
 
+    @AuditLog(action = "DISPATCH_CALL_NEXT")
     @Operation(summary = "叫下一位患者")
     @PreAuthorize("hasAnyAuthority('visit:entry','visit:audit','order:execute','charge:pay','system:admin')")
     @PostMapping("/api/core/dispatch/call-next")
@@ -72,6 +76,7 @@ public class DispatchController {
         return ResponseEntity.ok(called);
     }
 
+    @AuditLog(action = "DISPATCH_REORDER")
     @Operation(summary = "将任务移至队尾")
     @PreAuthorize("hasAnyAuthority('visit:entry','visit:audit','order:execute','charge:pay','system:admin')")
     @PostMapping("/api/core/dispatch/tasks/{id}/reorder-tail")
@@ -80,6 +85,7 @@ public class DispatchController {
         return ResponseEntity.ok().build();
     }
 
+    @AuditLog(action = "DISPATCH_SKIP")
     @Operation(summary = "跳过任务")
     @PreAuthorize("hasAnyAuthority('visit:entry','visit:audit','order:execute','charge:pay','system:admin')")
     @PostMapping("/api/core/dispatch/tasks/{id}/skip")
@@ -88,6 +94,7 @@ public class DispatchController {
         return ResponseEntity.ok().build();
     }
 
+    @AuditLog(action = "DISPATCH_REQUEUE")
     @Operation(summary = "重新排队")
     @PreAuthorize("hasAnyAuthority('visit:entry','visit:audit','order:execute','charge:pay','system:admin')")
     @PostMapping("/api/core/dispatch/tasks/{id}/requeue")

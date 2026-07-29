@@ -6,12 +6,17 @@ import java.util.Map;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.NoHandlerFoundException;
+
+import jakarta.validation.ConstraintViolationException;
 
 /**
  * 全局异常处理器：统一把各类异常映射为语义化 HTTP 状态码 + 标准 JSON 错误体。
@@ -61,6 +66,36 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(IllegalStateException.class)
     public ResponseEntity<Map<String, Object>> handleIllegalState(IllegalStateException e) {
         return error(HttpStatus.CONFLICT, "业务校验失败", e.getMessage());
+    }
+
+    /** JSON 解析失败 → 400。 */
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<Map<String, Object>> handleHttpMessageNotReadable(HttpMessageNotReadableException e) {
+        return error(HttpStatus.BAD_REQUEST, "请求体格式错误", e.getMessage());
+    }
+
+    /** @Validated 路径/查询参数校验失败 → 400。 */
+    @ExceptionHandler(ConstraintViolationException.class)
+    public ResponseEntity<Map<String, Object>> handleConstraintViolation(ConstraintViolationException e) {
+        String message = e.getConstraintViolations().stream()
+                .map(v -> v.getMessage())
+                .reduce((a, b) -> a + "; " + b)
+                .orElse("参数校验失败");
+        return error(HttpStatus.BAD_REQUEST, "参数校验失败", message);
+    }
+
+    /** 路径参数类型错误 → 400。 */
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<Map<String, Object>> handleTypeMismatch(MethodArgumentTypeMismatchException e) {
+        String name = e.getName();
+        String requiredType = e.getRequiredType() != null ? e.getRequiredType().getSimpleName() : "unknown";
+        return error(HttpStatus.BAD_REQUEST, "参数 " + name + " 类型错误，期望 " + requiredType, e.getMessage());
+    }
+
+    /** 缺少必填参数 → 400。 */
+    @ExceptionHandler(MissingServletRequestParameterException.class)
+    public ResponseEntity<Map<String, Object>> handleMissingParam(MissingServletRequestParameterException e) {
+        return error(HttpStatus.BAD_REQUEST, "缺少必填参数: " + e.getParameterName(), e.getMessage());
     }
 
     /** 兜底：所有其他未预期异常 → 500。 */

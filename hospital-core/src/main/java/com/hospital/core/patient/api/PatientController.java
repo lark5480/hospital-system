@@ -25,6 +25,7 @@ import com.hospital.core.report.infrastructure.FileServiceClient;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
@@ -99,7 +100,7 @@ public class PatientController {
 
     @Operation(summary = "患者注册")
     @PostMapping("/api/patient/register")
-    public ResponseEntity<PatientRegisterResponse> register(@RequestBody PatientRegisterRequest request) {
+    public ResponseEntity<PatientRegisterResponse> register(@Valid @RequestBody PatientRegisterRequest request) {
         return ResponseEntity.ok(patientService.register(request.toDomain()));
     }
 

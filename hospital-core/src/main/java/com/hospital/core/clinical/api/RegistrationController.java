@@ -18,6 +18,7 @@ import com.hospital.core.platform.annotation.AuditLog;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 
 /**
@@ -34,7 +35,7 @@ public class RegistrationController {
     @PreAuthorize("hasAnyAuthority('visit:entry', 'patient:booking')")
     @AuditLog(action = "REGISTER")
     @PostMapping("/api/core/registrations")
-    public ResponseEntity<Registration> register(@RequestBody Registration req) {
+    public ResponseEntity<Registration> register(@Valid @RequestBody Registration req) {
         return ResponseEntity.ok(
                 registrationService.register(req.getPatientId(), req.getDeptId(), req.getDoctorId()));
     }

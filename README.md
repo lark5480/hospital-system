@@ -162,7 +162,8 @@ hospital-system/
 ├── docker-compose.yml           # 中间件编排
 ├── .env.example               # 环境变量模板
 ├── .github/workflows/ci.yml     # GitHub Actions CI
-├── docs/architecture-design.md  # 架构设计 + ADR
+├── docs/architecture-design.md  # 架构设计（精简版）
+├── docs/adr/                    # 架构决策记录（独立管理）
 ├── hospital-core/               # 模块化单体核心
 ├── hospital-notification-service/ # 通知服务(RabbitMQ 消费者)
 ├── hospital-file-service/       # 文件服务(MinIO 封装)
@@ -218,8 +219,18 @@ hospital-system/
 - **API 端点**:`POST /api/core/medical-records`, `GET /api/core/medical-records?visitId=X`, `GET /api/core/medical-records/patient/{patientId}`。
 
 #### 审计日志(AOP 切面)
-关键写操作自动落 `audit_log` 表:
-- `CREATE_VISIT` / `PAY_CHARGE` / `BOOK_APPOINTMENT` / `CREATE_PRESCRIPTION` / `DISPENSE` / `CREATE_REPORT` / `PUBLISH_REPORT` / `REGISTER` / `CALL_NEXT` / `EDIT_ORDER` / `CANCEL_ORDER` / `REFUND_ORDER` / `CONFIRM_VISIT` / `FINISH_VISIT`
+关键写操作自动落 `audit_log` 表（按模块分组）：
+- **就诊域**：`CREATE_VISIT` / `CONFIRM_VISIT` / `FINISH_VISIT` / `DELETE_VISIT` / `EDIT_ORDER` / `CANCEL_ORDER` / `REFUND_ORDER` / `EXECUTE_EXAM_ORDER` / `SAVE_MEDICAL_RECORD`
+- **药事域**：`CREATE_PRESCRIPTION` / `DISPENSE` / `CANCEL_PRESCRIPTION`
+- **检验域**：`CREATE_REQUISITION` / `SUBMIT_RESULTS` / `CANCEL_REQUISITION`
+- **预约域**：`BOOK_APPOINTMENT`
+- **报告域**：`CREATE_REPORT` / `PUBLISH_REPORT`
+- **挂号域**：`REGISTER` / `CALL_NEXT` / `CANCEL_REGISTRATION`
+- **检查执行域**：`DISPATCH_START` / `DISPATCH_COMPLETE` / `DISPATCH_CALL_NEXT` / `DISPATCH_SKIP` / `DISPATCH_REQUEUE` / `DISPATCH_REORDER`
+- **组织域**：`CREATE_DEPT` / `UPDATE_DEPT` / `DELETE_DEPT` / `CREATE_STAFF` / `UPDATE_STAFF` / `DELETE_STAFF`
+- **菜单域**：`CREATE_MENU` / `UPDATE_MENU` / `DELETE_MENU` / `SORT_MENU`
+- **权限域**：`SAVE_ROLE_AUTHORITIES`
+- **账号域**：`CHANGE_PASSWORD`
 - `@AuditLog` 注解 + `AuditLogAspect` 切面自动记录。
 
 #### CQRS-lite 读模型
@@ -233,6 +244,10 @@ hospital-system/
 - **实现**:只读 API,手写 JSON 转换,不引入 HAPI FHIR 等重型库。
 - **支持资源**:Patient, Encounter, Condition, CapabilityStatement。
 - **API 端点**:`GET /fhir/Patient/{id}`, `GET /fhir/Encounter/{id}`, `GET /fhir/Condition/{id}`, `GET /fhir/metadata`。
+
+## 输入校验（@Valid + Jakarta Validation）
+
+所有 Request DTO 使用 `@NotNull` / `@NotBlank` / `@Pattern` 等注解声明约束，Controller 方法参数标注 `@Valid` 触发校验，校验失败由 `GlobalExceptionHandler` 统一返回 400。
 
 ## 学习路线图建议
 1. 先跑通后端,理解模块化单体 + 事件驱动 + Gateway + 前端衔接。

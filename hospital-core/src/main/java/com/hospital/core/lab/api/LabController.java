@@ -24,6 +24,7 @@ import com.hospital.core.platform.security.CurrentUserResolver;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 
 @Tag(name = "检验管理", description = "检验申请的创建、查询、结果录入与取消")
@@ -54,7 +55,7 @@ public class LabController {
     @PreAuthorize("hasAuthority('visit:entry')")
     @AuditLog(action = "CREATE_REQUISITION")
     @PostMapping("/api/lab/requisitions")
-    public ResponseEntity<LabRequisition> create(@RequestBody CreateRequisitionRequest req) {
+    public ResponseEntity<LabRequisition> create(@Valid @RequestBody CreateRequisitionRequest req) {
         return ResponseEntity.ok(labService.createFromVisit(
                 req.getVisitId(), req.getDoctorId(), req.getOrderIds()));
     }
@@ -64,7 +65,7 @@ public class LabController {
     @AuditLog(action = "SUBMIT_RESULTS")
     @PostMapping("/api/lab/requisitions/{id}/results")
     public ResponseEntity<?> submitResults(
-            @Parameter(description = "检验申请ID") @PathVariable Long id, @RequestBody SubmitResultsRequest req) {
+            @Parameter(description = "检验申请ID") @PathVariable Long id, @Valid @RequestBody SubmitResultsRequest req) {
         // 校验执行科室:只有申请所属科室的人员才能执行
         Long currentDeptId = currentDeptId();
         if (currentDeptId != null) {
