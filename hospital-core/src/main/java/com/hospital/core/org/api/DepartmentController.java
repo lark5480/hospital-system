@@ -14,6 +14,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.hospital.core.org.application.DepartmentService;
 import com.hospital.core.org.domain.Department;
+import com.hospital.core.platform.annotation.AuditLog;
 
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -43,6 +44,7 @@ public class DepartmentController {
         return ResponseEntity.ok(dept);
     }
 
+    @AuditLog(action = "CREATE_DEPT")
     @Operation(summary = "创建科室")
     @PostMapping("/api/core/org/departments")
     @PreAuthorize("hasAuthority('system:admin')")
@@ -50,6 +52,7 @@ public class DepartmentController {
         return ResponseEntity.ok(departmentService.create(department));
     }
 
+    @AuditLog(action = "UPDATE_DEPT")
     @Operation(summary = "更新科室")
     @PutMapping("/api/core/org/departments/{id}")
     @PreAuthorize("hasAuthority('system:admin')")
@@ -57,6 +60,7 @@ public class DepartmentController {
         return ResponseEntity.ok(departmentService.update(id, department));
     }
 
+    @AuditLog(action = "DELETE_DEPT")
     @Operation(summary = "删除科室")
     @DeleteMapping("/api/core/org/departments/{id}")
     @PreAuthorize("hasAuthority('system:admin')")

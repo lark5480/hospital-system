@@ -20,6 +20,7 @@ import com.hospital.core.iam.domain.Menu;
 import com.hospital.core.iam.domain.MenuAuthority;
 import com.hospital.core.iam.infrastructure.MenuAuthorityMapper;
 import com.hospital.core.iam.infrastructure.MenuMapper;
+import com.hospital.core.platform.annotation.AuditLog;
 
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -53,6 +54,7 @@ public class MenuManageController {
         return buildTree(all, null);
     }
 
+    @AuditLog(action = "CREATE_MENU")
     @Operation(summary = "创建菜单")
     @PostMapping
     public Menu create(@RequestBody Menu menu) {
@@ -62,6 +64,7 @@ public class MenuManageController {
         return menu;
     }
 
+    @AuditLog(action = "UPDATE_MENU")
     @Operation(summary = "更新菜单")
     @PutMapping("/{id}")
     public Menu update(@Parameter(description = "菜单ID") @PathVariable Long id, @RequestBody Menu menu) {
@@ -73,6 +76,7 @@ public class MenuManageController {
         return menu;
     }
 
+    @AuditLog(action = "DELETE_MENU")
     @Operation(summary = "删除菜单")
     @DeleteMapping("/{id}")
     public void delete(@Parameter(description = "菜单ID") @PathVariable Long id) {
@@ -80,6 +84,7 @@ public class MenuManageController {
         menuAuthorityMapper.delete(new QueryWrapper<MenuAuthority>().eq("menu_id", id));
     }
 
+    @AuditLog(action = "SORT_MENU")
     @Operation(summary = "调整菜单排序")
     @PutMapping("/{id}/sort")
     public void sort(@Parameter(description = "菜单ID") @PathVariable Long id, @RequestBody Map<String, Integer> body) {

@@ -18,6 +18,7 @@ import com.hospital.core.report.domain.ReportDetail;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 
 @Tag(name = "报告管理", description = "医疗报告的创建、查询、发布")
@@ -56,7 +57,7 @@ public class ReportController {
     @Operation(summary = "创建报告")
     @AuditLog(action = "CREATE_REPORT")
     @PostMapping("/api/reports")
-    public ResponseEntity<Report> create(@RequestBody CreateReportRequest req) {
+    public ResponseEntity<Report> create(@Valid @RequestBody CreateReportRequest req) {
         return ResponseEntity.ok(reportService.create(
                 req.getVisitId(), req.getType(), req.getTitle(),
                 req.getContent(), req.getDoctorId()));

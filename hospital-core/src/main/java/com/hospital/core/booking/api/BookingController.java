@@ -22,6 +22,7 @@ import com.hospital.core.platform.annotation.AuditLog;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 
 @Tag(name = "预约管理", description = "体检套餐查询、号源查询、预约与查询")
@@ -56,7 +57,7 @@ public class BookingController {
     @PreAuthorize("hasAuthority('patient:booking')")
     @AuditLog(action = "BOOK_APPOINTMENT")
     @PostMapping("/api/patient/appointments")
-    public ResponseEntity<AppointmentDetail> book(@RequestBody AppointmentRequest request) {
+    public ResponseEntity<AppointmentDetail> book(@Valid @RequestBody AppointmentRequest request) {
         Appointment appt = bookingService.book(
                 request.getPatientId(), request.getPackageId(), request.getSlotId());
         return ResponseEntity.ok(toDetail(appt));

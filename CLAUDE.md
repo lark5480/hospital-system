@@ -52,7 +52,7 @@ API 网关（hospital-gateway :8104）
   |                      - patient（患者注册）
   |                      - report（医疗报告）
   |                      - iam（菜单/RBAC）
-  |                      - org（科室、员工）   [9 个业务域之一]
+  |                      - org（科室、员工）   [10 个业务域之一]
   |                      - platform（共享内核：审计日志、消息、任务调度、统一账号）——非业务模块，所有模块可依赖
   |-- /api/notify/**  -> notification-service（:8102）  [事件消费者]
   |-- /api/files/**   -> file-service（:8103）           [MinIO 封装]
@@ -62,7 +62,7 @@ API 网关（hospital-gateway :8104）
 
 | 模块 | 职责 |
 |---|---|
-| `hospital-core` | 模块化单体——内含 9 个业务域模块，各自遵循 DDD 分层 |
+| `hospital-core` | 模块化单体——内含 10 个业务域模块，各自遵循 DDD 分层 |
 | `hospital-gateway` | Spring Cloud Gateway——路由 `/api/core/**`、`/api/notify/**`、`/api/files/**` |
 | `hospital-notification-service` | RabbitMQ 消费者——监听 `VisitCreatedEvent` |
 | `hospital-file-service` | MinIO 封装——文件上传/下载 |
@@ -94,7 +94,7 @@ clinical/          （示例模块）
 | Schema | 模块 |
 |---|---|
 | `platform` | audit_log、sys_user、sys_user_role、role、role_authority |
-| `clinical` | visit、orders、charge |
+| `clinical` | visit、orders、charge、registration、visit_read_model（CQRS）、medical_record（JSONB） |
 | `patient` | patient（含 user_id 关联统一账号） |
 | `booking` | exam_package、exam_item、slot、appointment |
 | `dispatch` | exam_task、queue_board |
@@ -130,7 +130,7 @@ ORM：MyBatis-Plus 3.5.7，`@TableName("schema.table")`，`map-underscore-to-cam
 Vue 3 + TypeScript + Vite 5 单页应用，配 Element Plus：
 
 - **布局：** `MainLayout.vue`——侧边栏（`el-menu`）+ 顶栏 + 主内容区
-- **路由：** 挂在 MainLayout 下的嵌套路由，16 个视图，`meta.requiresAuth` + 全局守卫
+- **路由：** 挂在 MainLayout 下的嵌套路由，29 个视图，`meta.requiresAuth` + 全局守卫
 - **状态：** 按业务域拆分的 Pinia store（`auth`、`visit`、`notification`、`dispatch`、`menu`、`patient`）
 - **接口：** `api/http.ts` 中的 Axios 实例（带 Bearer 令牌拦截器），按业务域划分的 API 模块
 - **认证：** 统一自管 JWT 真登录（手机号 + 密码），登录态持久化到 localStorage，刷新免登

@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.hospital.core.org.application.StaffService;
 import com.hospital.core.org.domain.Staff;
+import com.hospital.core.platform.annotation.AuditLog;
 import com.hospital.core.platform.security.CurrentUserResolver;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -56,6 +57,7 @@ public class StaffController {
         return ResponseEntity.ok(staff);
     }
 
+    @AuditLog(action = "CREATE_STAFF")
     @Operation(summary = "创建员工")
     @PostMapping("/api/core/org/staff")
     @PreAuthorize("hasAuthority('system:admin')")
@@ -63,6 +65,7 @@ public class StaffController {
         return ResponseEntity.ok(staffService.create(staff));
     }
 
+    @AuditLog(action = "UPDATE_STAFF")
     @Operation(summary = "更新员工")
     @PutMapping("/api/core/org/staff/{id}")
     @PreAuthorize("hasAuthority('system:admin')")
@@ -70,6 +73,7 @@ public class StaffController {
         return ResponseEntity.ok(staffService.update(id, staff));
     }
 
+    @AuditLog(action = "DELETE_STAFF")
     @Operation(summary = "删除员工")
     @DeleteMapping("/api/core/org/staff/{id}")
     @PreAuthorize("hasAuthority('system:admin')")

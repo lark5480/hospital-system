@@ -29,6 +29,7 @@ import com.hospital.core.platform.security.CurrentUserResolver;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 
 @Tag(name = "就诊管理", description = "就诊单的创建、查询、医嘱管理及状态流转")
@@ -52,7 +53,7 @@ public class VisitController {
     @PreAuthorize("hasAuthority('visit:entry')")
     @AuditLog(action = "CREATE_VISIT")
     @PostMapping("/api/core/visits")
-    public ResponseEntity<Visit> create(@RequestBody Visit visit) {
+    public ResponseEntity<Visit> create(@Valid @RequestBody Visit visit) {
         return ResponseEntity.ok(visitService.create(visit));
     }
 
@@ -60,7 +61,7 @@ public class VisitController {
     @PreAuthorize("hasAuthority('visit:entry')")
     @AuditLog(action = "CREATE_VISIT")
     @PostMapping("/api/core/visits/with-orders")
-    public ResponseEntity<VisitDetail> createWithOrders(@RequestBody VisitWithOrdersRequest request) {
+    public ResponseEntity<VisitDetail> createWithOrders(@Valid @RequestBody VisitWithOrdersRequest request) {
         return ResponseEntity.ok(visitService.createWithOrders(request.getVisit(), request.getOrders()));
     }
 
@@ -94,7 +95,7 @@ public class VisitController {
     @Operation(summary = "为就诊单添加医嘱")
     @PreAuthorize("hasAuthority('visit:entry')")
     @PostMapping("/api/core/visits/{id}/orders")
-    public ResponseEntity<VisitDetail> addOrder(@Parameter(description = "就诊单ID") @PathVariable Long id, @RequestBody Order order) {
+    public ResponseEntity<VisitDetail> addOrder(@Parameter(description = "就诊单ID") @PathVariable Long id, @Valid @RequestBody Order order) {
         return ResponseEntity.ok(visitService.addOrder(id, order));
     }
 
@@ -102,7 +103,7 @@ public class VisitController {
     @PreAuthorize("hasAuthority('visit:entry')")
     @AuditLog(action = "EDIT_ORDER")
     @PutMapping("/api/core/visits/{id}/orders/{orderId}")
-    public ResponseEntity<VisitDetail> editOrder(@Parameter(description = "就诊单ID") @PathVariable Long id, @Parameter(description = "医嘱ID") @PathVariable Long orderId, @RequestBody Order order) {
+    public ResponseEntity<VisitDetail> editOrder(@Parameter(description = "就诊单ID") @PathVariable Long id, @Parameter(description = "医嘱ID") @PathVariable Long orderId, @Valid @RequestBody Order order) {
         return ResponseEntity.ok(visitService.editOrder(id, orderId, order));
     }
 
