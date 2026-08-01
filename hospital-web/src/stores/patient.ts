@@ -64,7 +64,7 @@ export const usePatientStore = defineStore('patient', () => {
 
   async function book(payload: BookingPayload) {
     const detail = await bookAppointment(payload)
-    await fetchMyAppointments(payload.patientId)
+    await fetchMyAppointments()
     return detail
   }
 
@@ -81,10 +81,10 @@ export const usePatientStore = defineStore('patient', () => {
     }
   }
 
-  async function fetchMyAppointments(patientId: number) {
+  async function fetchMyAppointments() {
     loading.value = true
     try {
-      appointments.value = await listMyAppointments(patientId)
+      appointments.value = await listMyAppointments()
     } finally {
       loading.value = false
     }

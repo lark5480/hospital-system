@@ -17,10 +17,7 @@ const payMeta: Record<string, { text: string; type: '' | 'success' | 'warning' |
 }
 
 onMounted(async () => {
-  await store.fetchMe()
-  if (store.currentPatient) {
-    store.fetchMyAppointments(store.currentPatient.id)
-  }
+  store.fetchMyAppointments()
 })
 </script>
 

@@ -133,7 +133,7 @@ Visit.status: (无) → CREATED → CONFIRMED → IN_PROGRESS → FINISHED
 ### 整体流程
 
 ```
-患者登录 → 浏览套餐 → 选日期/时段 → 确认预约 → 进入排队
+患者登录 → 浏览套餐 → 选日期/时段 → 确认预约(模拟支付) → 到院 → 进入排队
    │                         │                   │              │
    └─ /patient/booking ───────┘                   │              │
                         └─ 原子占号(不超卖) ────────┘              │
@@ -145,17 +145,22 @@ Visit.status: (无) → CREATED → CONFIRMED → IN_PROGRESS → FINISHED
 | 页面 | 路由 | 功能 |
 |---|---|---|
 | 套餐预约 | `/patient/booking` | 浏览套餐、选日期/时段、确认预约 |
+| 自助挂号 | `/patient/registration` | 患者自助门诊挂号(与 B 端挂号共用排队号) |
 | 我的预约 | `/patient/appointments` | 查看已预约记录 |
 | 我的排队 | `/patient/my-queue` | 实时排队状态(10 秒轮询) |
 | 我的报告 | `/patient/my-reports` | 查看体检报告 |
 
 ### 关键机制
 
-- **号源不超卖**:`SlotMapper.incrementBooked` 执行 `UPDATE booking.slot SET booked = booked + 1 WHERE id = ? AND < capacity`,返回受影响行数 0 即满。
-- **事件驱动排班**:预约提交后发布 `AppointmentCreatedEvent`(自包含快照),`DispatchService` 消费 → 生成各工位 `ExamTask` + `QueueBoard` 投影行。
-- **号源生成**:`@Scheduled` 每日定时调用 `SlotGenerateJob`(未来 N 天号源)。
-- **过期清理**:`@Scheduled` 定时调用 `AppointmentCleanupJob`。
-- **患者身份**:C 端接口通过 `CurrentUserResolver` 解析,与登录用户绑定(自管 JWT)。
+- **号源不超卖**:`SlotMapper.incrementBooked` 执行 `UPDATE booking.slot SET booked = booked + 1 WHERE id = ? AND booked < capacity`,返回受影响行数 0 即满;预约在 `@Transactional` 内先占号后落单。
+- **事件驱动排班**:预约提交后发布 `AppointmentCreatedEvent`(自包含快照),`DispatchService` 消费 → 生成各工位 `ExamTask` + `QueueBoard` 投影行(CQRS 写读同库双写)。
+- **号源生成(双兜底)**:定时任务 `SlotGenerateJob` 每日生成未来 14 天号源(capacity=3);`listSlots()` 查询时若无号源则懒加载未来 7 天(capacity=2)。
+- **过期清理**:`@Scheduled` 每日 4:00 调用 `AppointmentCleanupJob`,过期未到院的 BOOKED 预约标记 CANCELLED 并释放号源。
+- **预约状态机**:`BOOKED(已约) → CHECKED_IN(到院,首个体检任务开始) → DONE(全部任务完成)`;`CANCELLED` 取消。状态推进由 `AppointmentStatusEvent` 从 Dispatch 回写(幂等,禁止回退)。
+- **模拟已支付(演示简化)**:C 端预约时自动标记 `PAID`,实付金额取套餐定价,未接真实支付网关——面向演示闭环刻意简化,后续可替换为支付回调。
+- **自动出报告**:某预约全部体检任务进入终态(完成/跳过)且至少完成一项时,`DispatchService.maybeGenerateReport()` 自动生成已发布体检报告(EXAM 类型),并异步发布 `ReportPdfEvent` 预生成 PDF 上传 MinIO;跳过项不阻塞出报告,报告内标注未检项,全部跳过则不出报告。
+- **排队分发操作(代码多于 ADR-016 文档)**:看板写操作含 `start`/`complete`(ADR-016 已记录)之外,还有自动叫号 `call-next`、过号重排 `reorder-tail`、跳过 `skip`、重新排队 `requeue`,以及 SSE 大屏推送和 `PatientCalledEvent` 叫号事件(C 端我的排队 10 秒轮询 + 叫号横幅)。双重护栏:患者级单活跃(一次只在一科检查)+ 医生指定顺序(前序项目未完不叫后续)。
+- **患者身份(IDOR 防护)**:所有 C 端自助接口(`/patient/me`、`/patient/reports`、`/patient/appointments`、`/core/dispatch/my-queue`)均通过 `CurrentUserResolver` 解析 JWT `sub`(登录手机号)绑定当前登录用户;预约列表/详情/发起预约在服务端做**归属校验**,非本人预约一律 403。
 - **权限**:C 端菜单需 `patient:booking` authority,仅患者可见。
 
 ### 排队分发权限

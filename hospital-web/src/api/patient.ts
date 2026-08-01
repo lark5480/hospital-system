@@ -47,10 +47,9 @@ export function searchPatients(keyword: string) {
   return http.get<Patient[]>('/patient/search', { params: { keyword } }).then((r) => r.data)
 }
 
-export function listMyAppointments(patientId: number) {
-  return http
-    .get<AppointmentDetail[]>('/patient/appointments', { params: { patientId } })
-    .then((r) => r.data)
+/** 我的预约列表(后端按当前登录用户解析,无需传患者ID) */
+export function listMyAppointments() {
+  return http.get<AppointmentDetail[]>('/patient/appointments').then((r) => r.data)
 }
 
 export function listMyReports() {
