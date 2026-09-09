@@ -45,7 +45,9 @@ function switchDept(id: number) {
 
 onMounted(async () => {
   try { departments.value = await orgApi.listDepartments() } catch { /* ignore */ }
-  try { patients.value = await listPatients() } catch { /* ignore */ }
+  // R-07: 后端患者列表已改为分页(pageSize 上限 500),这里显式取满一页
+  // TODO(P1): 改用 /api/patient/names?ids= 按需取姓名,避免大屏全量拉取
+  try { patients.value = await listPatients({ pageNum: 1, pageSize: 500 }) } catch { /* ignore */ }
   const initDept = Number(route.query.dept)
   if (initDept && departments.value.some(d => d.id === initDept)) {
     deptId.value = initDept

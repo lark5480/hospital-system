@@ -1,0 +1,312 @@
+# hospital-system 多 Agent 交叉质询代码审查报告
+
+- **审查日期**：2026-09-08
+- **审查范围**：`hospital-core`(159 生产 Java 文件) / `hospital-notification-service`(17) / `hospital-file-service`(4) / `hospital-gateway`(2) / `hospital-web`(41 ts + 36 vue) / `db/schema.sql` / `docker-compose.yml` / `pom.xml` / `.github/workflows/ci.yml`
+- **参与 Agent**：SECURITY（安全）、PERFORMANCE（性能）、TESTING（测试质量）
+- **流程**：第 1 轮三方独立审查 → 第 2 轮交叉质询（反驳 / 降级 / 升级 / 补充 / 自我修正 / 预判辩护）→ 第 3 轮主席收敛
+- **产出**：61 条问题（6 Critical / 22 High / 26 Medium / 7 Low），含 8 条质询后新增、9 条质询后改级
+- **实施状态（2026-09-09）**：P0 七项已全部落盘，另按「待拍板 5 件事」的分析结论完成 4 项加固 —— **22 项已修复、3 项部分修复**，均未提交 git。详见下方「实施状态总览」
+- **定级标准**：
+  - **Critical**：可直接导致批量敏感数据泄露 / 权限完全失守，或线上必然不可用
+  - **High**：需要低门槛前置条件即可造成实质损害，或数据量到 10 万级必然劣化到不可用
+  - **Medium**：在特定条件叠加下才触发，或属于可被利用的放大器 / 工程化缺失
+  - **Low**：最佳实践偏离、后门代码路径、局部体验问题
+
+---
+
+## 实施状态总览（2026-09-09 更新）
+
+### 已修复（Done）
+
+| 编号 | 修复内容 | 主要文件 |
+|---|---|---|
+| R-01 | 删除 JWT 硬编码默认密钥；启动期 fail-fast（prod 抛异常 / 非 prod 生成随机密钥并告警）；`APP_JWT_SECRET` 注入位 | `JwtTokenService`、`application.yml` |
+| R-02 | `/fhir/**` 移出 permitAll；4 个 FHIR Controller 加 `@PreAuthorize`；**无过滤参数一律 400**（刻意不用分页——分页照样能逐页拖库）；身份证出参脱敏 | `SecurityConfig`、`Fhir*Controller`、`FhirApiTest` |
+| R-03 | 新增 `InternalTokenFilter`（`X-Internal-Token`）；`patientId` 改必填、`owner==null` 一律 403；上传正则 + 20MB 限制 + **禁止覆盖(409)**；`Content-Disposition` 改用 `ContentDisposition` 构造 | `FileController`、file-service `SecurityConfig`/`application.yml`、`FileServiceClient` |
+| R-07 | 患者列表分页下推（上限 500）；新增 `/api/patient/names?ids=`；出参身份证脱敏；**姓名/身份证/手机号收敛为仅 admin 可改**；`update` 补 `@AuditLog` | `PatientController`、`PatientService`、`PatientsView.vue` |
+| R-08 | 病历/就诊/报告读接口补 `@PreAuthorize` + 归属校验（患者强制覆盖为本人 patientId）；C 端读接口追加 `patient:booking` | `VisitController`、`MedicalRecordController`、`ReportController`、`VisitService` |
+| R-09 | `create`→`visit:entry`、`publish`→`visit:audit\|system:admin`；`doctorId` 从 `CreateReportRequest` 删除、改服务端解析 | `ReportController`、`CreateReportRequest` |
+| R-10 | 登录响应返回 `mustChangePassword`（密码仍等于默认口令即置真，**未新增数据库列**）；密码策略 8~64 位 + 字母数字 + 弱口令黑名单 + 不得与旧密码相同；删除"旧密码为空跳过校验"分支；新建强制改密页 + 路由守卫 + 前端即时校验 | `PasswordController`、`AuthService`、`ChangePasswordView.vue`、`ChangePasswordDialog.vue`、`router/index.ts` |
+| R-12 | 登录改 `@RequestBody`（密码不再进 URL query）；新增 `LoginAttemptService`（5 次锁 15 分钟 + IP 限流 + 惰性清理）；429 单独提示 | `AuthController`、`LoginView.vue`、`api/auth.ts`、`http.ts` |
+| R-13 | SSE `0L`→60s + 15s 心跳 + 500/300 连接上限 + `catch(Exception)`+`finally` 清理；6 处广播改 `afterCommit` 移出事务；subscribe 加 `isAuthenticated()` | `DispatchSseController`、`DispatchService`、notification `NotificationController` |
+| R-14 | `Set<SseEmitter>` → `Map<station, Set>`，**station 过滤真正生效**；未指定 station 的订阅者仍收全量（保持兼容） | `DispatchSseController` |
+| R-22 | `RestTemplate` connect 3s / read 15s；`reportPdfExecutor` 补 `CallerRunsPolicy` | `AsyncConfig`、`FileServiceClient` |
+| R-30 | `objectName` 正则校验；20MB 限制；同名对象 409 禁止覆盖（防报告投毒）；上传响应体 `Map.of` NPE 修复 | `FileController`、file-service `application.yml` |
+| R-57 | 删除 `AuthService` 空密码免密分支；`PasswordController` 对称分支一并删除 | `AuthService`、`PasswordController` |
+| 决策 4B | **由网关注入 `X-Internal-Token`**（`AddRequestHeader`）——令牌只存在于服务端，浏览器永不接触，前端零改动；file-service 在 prod 未配置令牌即拒绝启动（与 R-01 对称） | gateway `application.yml`、`InternalTokenFilter`、file-service `SecurityConfig` |
+| 决策 5 | **改密/重置即吊销该用户全部 token**（新增 `TokenRevocationService`，Redis 用户维度，TTL 与 token 对齐）；JWT TTL 8h→4h；`issue()` 加 jti 为单设备登出预留 | `TokenRevocationService`(新)、`JwtAuthFilter`、`JwtTokenService`、`PasswordController`、`ChangePasswordView.vue` |
+
+### 部分修复
+
+| 编号 | 已完成 | 未完成 |
+|---|---|---|
+| R-11 | core `SecurityConfig` 收口；file-service 加内部令牌 | **notification-service 仍 `permitAll()`**（无 JWT 基础设施，加强制鉴权会打断前端 SSE），仅加注释排 P1 |
+| R-18 | `VisitService.list()` 在 `currentDeptId==null` 且非 admin 时返回空列表 + 告警 | 循环内全表扫描的 O(V×O) 算法未优化（P1） |
+| R-33 | `/actuator/**` 移出 permitAll | Swagger 仍放行（开发依赖），生产关闭排 P2 |
+| R-34 | 改密/重置吊销已实现 | `?token=` query 回退未动（SSE 依赖 `EventSource`，P2） |
+| R-45 | 登录失败锁定/限流已落地（BCrypt 提 cost 的前置条件） | BCrypt cost 仍为 10，提升到 12 排 P1 |
+
+### 附带修复（原报告未列项）
+
+| 问题 | 说明 |
+|---|---|
+| **患者编辑表单无法保存** | 列表出参身份证已脱敏（含 `*`），回填表单后过不了正则校验 → **任何人都保存不了**。`openEdit` 改为脱敏值置空 + placeholder 提示"留空表示不修改" |
+| `StaffView.vue` 既有编译错误 | `patientApi.resetPassword` → `resetPatientPassword`；`Staff` 类型补 `userId` |
+| 403 无统一提示 | `http.ts` 补 403 中文提示；401 时不再重复跳转登录页 |
+
+### 未修复（按计划延后）
+
+- **P1**：R-04 索引、R-05 全表扫描下推、R-06 金额测试、R-16/17/19/20/21/23/24 性能项、R-26 JaCoCo、R-27 三模块测试、R-28 MockMvc、R-29/31/32/35/36/44
+- **P2**：R-46~R-56（测试与前端）、R-58 启动期 DELETE 迁 Flyway、R-59/60/61
+- **下一迭代**：决策 4 方案 A —— 撤掉网关 `/api/files` 路由、改由 core 代理 upload/list，让 file-service 真正退到内网（当前有方案 B 顶着）
+- **决策 1 结论**：不开放 `/visits/page`、`/reports/list`、`/reports/type` 给患者，也不新建 `/mine`。C 端能力一律走 `PatientController` 下自带归属校验的专用端点（`/api/patient/reports` 等），已可满足现有 `patient/*` 全部页面
+
+### 新增运维依赖（部署清单必须同步）
+
+1. `APP_JWT_SECRET`：≥32 字节随机串，未注入时 prod 启动失败
+2. `FILE_INTERNAL_TOKEN`：core 与 file-service 必须一致，未注入时 file-service 在 prod 下启动失败
+3. **Redis 进入认证关键路径**：`TokenRevocationService` 默认 fail-closed，Redis 不可用会拒绝全部请求（`app.jwt.revocation-fail-open=true` 可切为放行，但削弱吊销语义）
+
+---
+
+## 一、结论摘要
+
+| 维度 | 最关键结论 |
+|---|---|
+| 安全 | 认证体系是"纸糊的"：JWT 密钥硬编码在源码（可自签 `system:admin`），`/fhir/**` 与 file-service 完全匿名，106 个端点中 51 处有 `@PreAuthorize`，而 `PatientController`/`ReportController`/`Fhir*` 三个类为 0；叠加全院统一弱口令 `123456`，攻击者获取一个有效 token 的成本极低 |
+| 性能 | 全系统没有一条针对业务基表外键的二级索引（27 张表仅 2 张有索引），且 `VisitService`/`PatientService` 大量使用 `selectList(null)` 全表拉取后在 Java 内存过滤——**加索引也救不了未下推 WHERE 的写法**；叠加 Hikari 默认 10 连接，少量并发即可打满 |
+| 测试 | 18 个测试类 / 101 个 `@Test` 全部集中在 `hospital-core`，另外 3 个模块 23 个文件零测试，19/23 的 Controller 无契约测试；**全仓无 JaCoCo，"缺口有多大"本身不可度量**；金额计算（真金白银）零 BigDecimal 边界断言 |
+
+**三者不是孤立的**：安全修复与性能修复同源（补归属校验时会顺带把全表扫描下推成带 WHERE 的查询）；性能债是可被利用的 DoS 面（全表扫描在写事务内 → 持锁 → 连接池耗尽）；测试缺口决定了前两类问题能否被拦住。
+
+---
+
+## 二、Critical 问题（6 条）
+
+> **状态**：R-01 ✅ 已修复 ｜ R-02 ✅ 已修复 ｜ R-03 ✅ 已修复 ｜ R-04 / R-05 / R-06 ⏳ P1 未启动
+
+### R-01 JWT 签名密钥硬编码为公开默认值，可自签任意身份令牌
+- **维度** 安全（SEC-01）｜**共识** 三方无异议
+- **位置** `hospital-core/.../platform/infrastructure/JwtTokenService.java:33`
+- **证据**
+```java
+@Value("${app.jwt.secret:hospital-system-dev-secret-key-must-be-at-least-32-bytes-long}")
+private String secret;
+```
+  全仓 `application*.yml` 与 `docker-compose.yml` **均未出现** `app.jwt.secret`，即默认值就是实际生效值；`issue()`(`:55-64`) 把 `roles`/`authorities` 直接写入 payload，`parse()`(`:68-78`) 无 jti、无吊销、无黑名单。
+- **影响** 用源码里这串公开密钥自签 `authorities=["system:admin"]` 的 JWT（TTL 8h），可直接调用建角色、改员工、重置密码、读全量 PHI 的管理接口，等同完全接管 HIS。
+- **建议** ① 删除默认值改 `@Value("${app.jwt.secret}")`；② 启动期 fail-fast：密钥长度 < 32 或命中该 dev 串即抛异常（见 C-1 测试项）；③ 生产用环境变量/KMS 注入；④ 增加 `jti` + Redis 白名单支持吊销，改密时递增 `tokenVersion`。
+
+### R-02 `/fhir/**` 完全匿名放行，泄露全院患者身份证 / 手机号 / 诊断
+- **维度** 安全（SEC-02）｜**共识** 三方无异议
+- **位置** `platform/security/SecurityConfig.java:70`；`fhir/api/FhirPatientController.java:40`；`fhir/api/FhirConditionController.java:43`
+- **证据**
+```java
+.requestMatchers("/api/auth/**", "/actuator/**", "/fhir/**",
+        "/swagger-ui/**", "/api-docs/**", "/v3/api-docs/**").permitAll()
+```
+  不传参数时 `patientService.list()` / `visitService.listAll()` 返回**全量**；`PatientConverter.java:23-27` 把 `id_card` 写入 `identifier`。网关 `application.yml:56-59` 还显式把 `/fhir/**` 暴露到 8104。
+- **影响** 一次 `curl /fhir/Patient` 拿到全院患者姓名 + 身份证 + 手机号 + 出生日期；`/fhir/Condition` 拿到全量诊断。属敏感个人信息批量泄露。
+- **建议** ① 从 `permitAll()` 移除 `/fhir/**`；② 三个 Controller 加 `@PreAuthorize("hasAnyAuthority('fhir:read','system:admin')")`；③ 无过滤参数时禁止全量返回，强制分页；④ `PatientConverter` 增加身份证脱敏分支。
+
+### R-03 file-service 全量放行 + 下载归属校验可被"省略参数"绕过
+- **维度** 安全（SEC-03）｜**共识** SEC 辩护后维持，无人反驳
+- **位置** `hospital-file-service/.../config/SecurityConfig.java:20`；`api/FileController.java:94-114`
+- **证据**
+```java
+.authorizeHttpRequests(auth -> auth.anyRequest().permitAll());
+...
+if (patientId != null) {                    // 不传 → 归属校验整段跳过
+    String owner = stat.userMetadata().get("patientid");
+    if (owner != null && !owner.equals(String.valueOf(patientId))) return 403;
+}
+```
+- **关于"内网隔离后应降级"的裁决**：不成立。① `docker-compose.yml` 只编排中间件，应用是本地 `spring-boot:run` 绑定宿主机 8103；② 网关 `application.yml:32-35` 显式为 `/api/files/**` 建对外路由，而网关 `SecurityConfig` 是 `@Profile("!iam")` + `permitAll()`，**仓库中不存在 `application-iam.yml`**，permitAll 就是唯一运行态；③ 即使纵深防御生效，省略一个参数即可绕过。
+- **影响** 匿名下载任意患者体检报告 PDF（含姓名、身份证、检验结论），遍历 id 可批量拖库。
+- **建议** ① `patientId` 改必填且 `owner == null` 时拒绝匿名；② file-service `SecurityConfig` 改默认拒绝或 `oauth2ResourceServer().jwt()`；③ 8101/8102/8103 不映射宿主机端口。
+
+### R-04 热路径外键 / 过滤列无任何二级索引
+- **维度** 性能（PERF-01）｜**共识** 三方一致，但**措辞已修正**
+- **位置** `hospital-core/src/main/resources/db/schema.sql`
+- **修正说明** 原始结论"全部表零索引"被三方共同推翻：实际 `schema.sql:300-304` 读模型有 5 条索引、`:1042-1044` 病历有 3 条（含 JSONB GIN）。准确表述为：**27 张表中仅 2 张有二级索引，业务基表外键全裸**。
+- **影响** 10 万 visit / 30 万 orders / 30 万 charge 时，`getDetail()` 单次 2 次 Seq Scan 各 30 万行，`listPage` 每页扫描约 600 万行，P95 从 <10ms 退化到秒级。
+- **建议** 按 PERF-01 给出的 25 条 DDL 建索引，优先 `orders(visit_id)`、`charge(visit_id, pay_status)`、`visit(patient_id)`、`visit(dept_id)`、`exam_task(station, status, seq)`、`queue_board(station, status)`、`appointment(patient_id/slot_id)`、`registration(dept_id, created_at)`；生产用 `CREATE INDEX CONCURRENTLY`。
+
+### R-05 写事务内 `selectList(null)` 全表扫描，WHERE 未下推
+- **维度** 性能（PERF-02 + TEST 补充）｜**共识** 三方一致，TEST 补充了关键机理
+- **位置** `clinical/application/VisitService.java:200,235,262,289,339,359`；`PatientService.java:99`
+- **证据**
+```java
+List<Charge> unpaid = chargeMapper.selectList(null).stream()      // 无 WHERE
+        .filter(c -> visitId.equals(c.getVisitId()) && "UNPAID".equals(c.getPayStatus()))
+        .toList();
+```
+- **TEST 的补充裁决** 这不是"缺索引"，而是**根本没下推 WHERE**，加索引也救不了；且发生在 `@Transactional` 内，持锁时间随数据量线性增长。
+- **影响** 单次结算/退费/结束就诊 = 全表物化 charge（30 万行 ≈ 60MB 堆分配）并在事务内持锁；配合 R-23（连接池 10）构成低成本 DoS（见 R-29）。
+- **建议** 全部改为 `LambdaQueryWrapper.eq(...)`（`ChargeService.java:30-31` 已是正确写法）；`finishVisit` 的 `hasUnpaid` 用 `selectCount`；`pay()` 用单条 `UPDATE ... WHERE visit_id=? AND pay_status='UNPAID'`。
+
+### R-06 金额计算零边界 / 零精度测试
+- **维度** 测试（TEST-01）｜**共识** PERF 确认补测无性能副作用，维持 Critical
+- **位置** `VisitService.java:78,134,191,389-391`；`VisitReadModelService.java:55,92`
+- **证据** 全仓唯一金额断言是 `VisitReadModelTest.java:52` 的 `31.00`（15.50×2）；`VisitServiceTest`/`VisitServiceLifecycleTest` 零 BigDecimal 断言（`:76` 造了 `100.00` 的 Charge 却从不断言）。
+- **影响** `unitPrice == null` → NPE → 建单整单失败；`quantity` 为负 → 负金额 Charge → 可构造"负额结算"；全链路无 `setScale(2, HALF_UP)`，scale 漂移零守护。这是唯一一处**出错后既不抛异常、也不被任何断言发现、且直接对应真金白银**的数据。
+- **建议** 补 `VisitServiceOrderAmountTest`：`nullUnitPrice_throws`、`negativeQuantity_throws`、`zeroQuantity_zeroAmount`、`scaleRounding_usesExplicitScale`；生产侧先补 `@Valid` 的 `@Positive`/`@NotNull` 与显式 `setScale`。
+
+---
+
+## 三、High 问题（22 条）
+
+> **已修复**：R-07、R-08、R-09、R-10、R-12、R-13、R-14、R-22
+> **部分修复**：R-11（notification 仍 permitAll）、R-18（仅加全量兜底，算法未优化）
+> **未启动**：R-15、R-16、R-17、R-19、R-20、R-21、R-23、R-24、R-25、R-26、R-27、R-28
+
+| 编号 | 标题 | 维度 | 位置 | 备注 |
+|---|---|---|---|---|
+| R-07 | `/api/patient/**` 已认证但无授权、无归属校验，可批量读 PII 并篡改他人档案 | 安全(SEC-04) | `patient/api/PatientController.java:107-138` | **措辞修正**：非"匿名可访问"（`anyRequest().authenticated()` 已拦匿名）；**撤回**"改手机号劫持账号"子项（`phone` 有 UNIQUE 约束且 `password` 不变） |
+| R-08 | 就诊 / 病历 / 报告读接口 IDOR，且 `list()` 在 `currentDeptId==null` 时返回全量 | 安全(SEC-05) | `MedicalRecordController.java:33,43,70`；`VisitController.java:75,90,166`；`ReportController.java:33,74`；`VisitService.java:499-502` | SEC 质询后**证据升级**：患者账号 `currentDeptId()` 返回 null → 一次请求拉全量就诊 |
+| R-09 | 报告创建 / 发布无鉴权，`doctorId` 前端可控 → 可冒名医生发布报告 | 安全(SEC-06) | `report/api/ReportController.java:58-77` | 破坏医疗数据完整性 |
+| R-10 | 全院统一弱口令 `123456` + 改密仅校验 4 位 + 无失败锁定 | 安全(SEC-07) | `DataInitializer.java:33`；`PasswordController.java:40`；`AuthService.java:41-52` | **与 R-45 有前置依赖**：先做登录限流再提 BCrypt cost |
+| R-11 | gateway / notification / file 三服务 `permitAll`，无 iam profile 实现 | 安全(SEC-08) | 三个模块各自的 `SecurityConfig` | 仓库中不存在 `application-iam.yml` |
+| R-12 | **登录把明文密码放进 URL query** | 安全(SEC-20，质询新增) | `hospital-web/src/api/auth.ts:16`；`platform/api/AuthController.java:26-29` | 主席已复核确认。密码进入浏览器历史 / 网关 access log / Referer |
+| R-13 | SSE：`SseEmitter(0L)` 无超时、无心跳、无连接上限、无鉴权，且在 `@Transactional` 内同步广播 | 安全(SEC-16)+性能(PERF-10) | `DispatchSseController.java:32,37`；`NotificationController.java:29,60`；`DispatchService.java:102,123,227,249,267,291` | **合并计数**，一处代码、一次修复；notification 侧完全匿名 → 资源耗尽型 DoS |
+| R-14 | **SSE 的 `station` 过滤是空实现**，全量广播 | 性能(PERF-19，质询新增) | `DispatchSseController.java:32,36,42,52-72` | 主席已复核：声明了参数、文档承诺过滤、实现把 station 丢弃。TEST 主张升为契约缺陷 |
+| R-15 | 启动全量重建读模型 + 全量账号迁移 | 性能(PERF-03) | `DataInitializer.java:44-48,71-101`；`VisitReadModelService.java:117-128` | **Critical→High**：SEC/PERF 共识"启动窗口放大"；但 SEC 的"无删表"论据被驳回（`:60` 确有 DELETE），PERF 的"try/catch 可隔离"论据被驳回（同类自调用无独立事务，PG 下 `25P02` 会致整个 initAll 回滚）。>5 万 visit 或单条 >20ms 时回升 Critical |
+| R-16 | 读模型写放大：单次写 ~8 次查询 + 末尾 `getDetail()` 再 6 次 | 性能(PERF-04) | `VisitReadModelService.java:40-103`；`VisitService.java:92,121,174,214,240,274,302,372` | 建议改 `AFTER_COMMIT` + `@Async` 异步刷新 |
+| R-17 | `listPage` 走读模型后仍逐行回查，退化成 1+3N | 性能(PERF-05) | `VisitService.java:446-480` | pageSize=10 → 32 次 SQL；与 R-04 有前置依赖 |
+| R-18 | `VisitService.list()` 三表全量加载 + 循环内再全表，O(V×O) | 性能(PERF-06) | `VisitService.java:498-525` | 与 R-07 同源修复：下推 `patient_id`/分页后同时消失 |
+| R-19 | lab / pharmacy / report 名称解析逐行回查 N+1 | 性能(PERF-07) | `LabService.java:258-312`；`PrescriptionService.java:286-302`；`ReportService.java:143-189` | 建议统一 `namesByIds` 批量 + Caffeine 缓存 |
+| R-20 | 关键字搜索 `%kw%` 前置通配 + 三列 OR，索引完全失效 | 性能(PERF-08) | `VisitService.java:426-431`；`PatientService.java:103-108` | 建议 `pg_trgm` GIN 或中文 `zhparser` + `tsvector` |
+| R-21 | 收费 / 医嘱逐条 `updateById` / `insert`，无批量 | 性能(PERF-09) | `VisitService.java:75-90,292-296,349-367` | 单条 UPDATE 替代 + `reWriteBatchedInserts=true` |
+| R-22 | `RestTemplate` 无连接 / 读超时 | 性能(PERF-11)+安全(SEC-17) | `platform/config/AsyncConfig.java:31-34`；`report/infrastructure/FileServiceClient.java:59,71` | file-service 挂起 → 4 个 PDF 线程永久阻塞 + Tomcat 线程泄漏 |
+| R-23 | HikariCP 未配置（默认 10 连接） | 性能(PERF-13) | `application.yml:11-15` | **Medium→High**：SEC-18 推动，单次请求持连接可达数秒，10 并发即耗尽 |
+| R-24 | **`logging.level.com.hospital: debug` 全站开启** | 性能(PERF-16，质询新增) | `application.yml:43` | 热路径 `log.debug` 字符串拼接无 `isDebugEnabled` 守卫 + Console Appender 的 `System.out` 是 synchronized；写接口 CPU/RT +20~40%；顺带 PHI 落日志（见 R-32） |
+| R-25 | 重复预约无幂等校验（同患者同号源可下多单） | 测试(TEST-02b) | `BookingService.java:177-216` | 纯 Java 缺陷、单测可覆盖、零覆盖。防超卖本身由 DB 原子 UPDATE 保证（见 R-46） |
+| R-26 | 无 JaCoCo、无覆盖率门槛、无 Testcontainers | 测试(TEST-03) | 根 `pom.xml:74-91`；`hospital-core/pom.xml:127-144`；`ci.yml:63-64` | 全仓 grep `jacoco` 零命中 → "缺口有多大"不可度量 |
+| R-27 | notification / file / gateway 三模块 23 个生产文件零测试 | 测试(TEST-04) | 三模块 `src/test` 不存在 | 最该先做：三个模块各有独立 `SecurityConfig`，配错即全量放行 → 3 条"未认证必须 401"冒烟 |
+| R-28 | Controller 19/23 零 MockMvc，FHIR 也无 JSON 契约测试 | 测试(TEST-05) | `FhirApiTest.java:22-36` 仅断言 3 个字段 | FHIR 是对外互操作契约，字段改名测试全绿但对端解析失败 |
+
+---
+
+## 四、Medium 问题（26 条）
+
+> **已修复**：R-30（上传正则 + 20MB + 禁止覆盖）
+> **部分修复**：R-33（`/actuator` 已收口，Swagger 仍放行）、R-45（锁定/限流已落地，BCrypt cost 未提）
+> **未启动**：R-29、R-31、R-32、R-35、R-36、R-37、R-38、R-39、R-40、R-41、R-42、R-43、R-44、R-46～R-55
+
+| 编号 | 标题 | 维度 | 位置 |
+|---|---|---|---|
+| R-29 | 全表扫描 + 长事务 → 锁等待型 DoS 放大器 | 安全(SEC-18) | `VisitService.java:200-359`；`application.yml:11-15` |
+| R-30 | 上传无类型/大小校验 + `objectName` 客户端可控 → 报告对象可被覆盖投毒 | 安全(SEC-11+24) | `file/api/FileController.java:55-64,94-114` |
+| R-31 | 审计：`jp.proceed()` 抛异常时审计丢失 + 读接口零审计 | 安全(SEC-23) | `platform/aspect/AuditLogAspect.java:37-52` |
+| R-32 | `server.error.include-message: always` + DEBUG 日志 → PHI 落盘 | 安全(SEC-22) | `application.yml:3-4,43`；`AuthService.java:70`；`PatientController.java:64` |
+| R-33 | Swagger / OpenAPI 匿名暴露（gateway/notification 的 actuator 亦放行） | 安全(SEC-21) | `SecurityConfig.java:70-71`；网关 `application.yml:61-64` |
+| R-34 | JWT 无吊销机制 + SSE 用 query 传 token | 安全(SEC-09) | `JwtAuthFilter.java:56-62` |
+| R-35 | 通知服务 CORS `allowedOriginPatterns("*")` + `allowCredentials(true)` | 安全(SEC-10) | `notification/config/CorsConfig.java:19-23` |
+| R-36 | docker-compose / application.yml 内置弱口令，中间件端口全暴露 | 安全(SEC-12) | `docker-compose.yml:43,72-73,90` |
+| R-37 | `queue_board` 全量加载 + Java 排序，无清理机制（年增 55 万行） | 性能(PERF-12) | `DispatchService.java:185-195,295-300` |
+| R-38 | `callNext` 循环内两次查询；`reorderToTail` 全站加载求 `max(seq)` | 性能(PERF-14) | `DispatchService.java:206-244`；`RegistrationService.java:40-43` |
+| R-39 | 前端大屏全量拉患者 + element-plus 全量引入 | 性能(PERF-15) | `OutpatientScreenView.vue:48`；`main.ts:4-5,17` |
+| R-40 | 轮询与 SSE 并存，重复拉取且无可见性感知 | 性能(PERF-20) | `OutpatientScreenView.vue:34`；`PatientMyQueueView.vue:48` |
+| R-41 | PDF 生成：字体每次从磁盘重解析 + 下载路径同步阻塞 Tomcat 线程 | 性能(PERF-21) | `ReportPdfGenerator.java:88-94`；`PatientController.java:67,83` |
+| R-42 | `book()` 先 insert 再 update 同一行；`ensureSlotsExist` 无批量 | 性能(PERF-22) | `BookingService.java:112-133,189-203` |
+| R-43 | `listPage` 的 `inSql` 字符串拼接 + `orders.execution_dept_id` 无索引 | 性能(PERF-23) | `VisitService.java:421-422,441-442` |
+| R-44 | 审计同步写库（41 处 `@AuditLog` 每个写请求 +1 次 INSERT） | 性能(PERF-17) | `AuditLogAspect.java:37-52` |
+| R-45 | BCrypt cost 10→12 需先落地登录限流，否则引入 CPU 型 DoS | 性能(PERF-18) | `SecurityConfig.java:48`；`AuthService.java:41-52` |
+| R-46 | 防超卖缺 DB 级并发集成用例（mock 伪并发价值极低） | 测试(TEST-02a) | `BookingServiceTest.java:166-187`；`SlotMapper.java:17` |
+| R-47 | BookingService 仅 `book()` 有测试，号源生成/清理/状态机裸奔 | 测试(TEST-06) | `BookingService.java:84-244` |
+| R-48 | ArchUnit 未守护"禁止绕过 `transitTo` 直接 `setStatus`" | 测试(TEST-07b) | `VisitStatus.java:20-48`；`ArchitectureTest.java:27-67` |
+| R-49 | 集成测试断言依赖全局种子数据（`id=1`/`total==1`/固定 keyword） | 测试(TEST-08) | `FhirApiTest.java:32`；`VisitReadModelTest.java:67,71` |
+| R-50 | `DataInitializer` 在测试中无条件执行且零断言，基线被隐性改写 | 测试(TEST-10b) | `DataInitializer.java:44-101`；`ci.yml:13-14` |
+| R-51 | `JsonbTypeHandler` 零测试，非法 JSONB 静默返回 String → 远端 CCE | 测试(TEST-09) | `JsonbTypeHandler.java:68-77` |
+| R-52 | `listPage` 分页边界零覆盖（`pageNum=0` → 负 OFFSET） | 测试(TEST-11) | `VisitService.java:441` |
+| R-53 | `finishVisit(force)` 的退款分支与事件副作用未断言 | 测试(TEST-12) | `VisitService.java:348-368`；`VisitServiceTest.java:126-136` |
+| R-54 | `MenuServiceTest` 污染 `SecurityContextHolder`（无 `clearContext`） | 测试(TEST-13) | `MenuServiceTest.java:57-59,93-95` |
+| R-55 | CI 无前端门禁：无 npm step、无 type-check、无 lint | 测试(TEST-15b) | `.github/workflows/ci.yml:53-64` |
+
+## 五、Low 问题（7 条）
+
+> **已修复**：R-57（空密码免密分支已删除）
+> **未启动**：R-56、R-58、R-59、R-60、R-61
+
+| 编号 | 标题 | 维度 | 位置 |
+|---|---|---|---|
+| R-56 | 前端 token + authorities 存 localStorage，令牌 8h 不可吊销 | 安全(SEC-13) | `stores/auth.ts:55-68` |
+| R-57 | 空密码"免密登录"后门代码路径（主流程不产生 NULL 行） | 安全(SEC-14) | `AuthService.java:48-52`；`PasswordController.java:54` |
+| R-58 | 启动期 `DELETE FROM org.staff` 等破坏性 DML 放在 `CommandLineRunner` | 安全(SEC-19)/测试(TEST-10) | `DataInitializer.java:53-63` |
+| R-59 | `VisitStatus` 缺参数化转换矩阵测试；`of(null)` 静默返回 CREATED | 测试(TEST-07a) | `VisitStatus.java:43-47` |
+| R-60 | PDF 字体路径默认 Windows-only，CI(ubuntu) 行为不同；PDF 产物无断言 | 测试(TEST-14) | `ReportPdfGenerator.java:43,90-94` |
+| R-61 | 前端零测试（无 vitest / playwright 依赖与脚本） | 测试(TEST-15) | `hospital-web/package.json:6-11,20-25` |
+
+---
+
+## 六、交叉质询裁决记录（分歧与结论）
+
+| # | 争议点 | 各方立场 | 主席裁决 |
+|---|---|---|---|
+| 1 | PERF-03 定级 | SEC：Critical→High（有 try/catch、无删表）｜PERF：接受降级，驳回论据 | **降为 High**。SEC 结论对但论据错（`:60` 确有 DELETE）；PERF 反驳对但同类自调用无独立事务，try/catch 不隔离。收录双方论据 |
+| 2 | TEST-10 是否"每次启动删数据" | SEC：夸大，有幂等闸门，且应迁出测试维度｜TEST：接受降级，但反驳"迁出" | **降为 Low 并记 SEC-19**；同时**新立 R-50(Medium)**：启动期副作用在测试中零断言。两者修法不同，不合并 |
+| 3 | 审计丢失的机理 | SEC：外层事务回滚连带抹掉｜PERF：Controller 无事务、不持业务锁｜TEST：是**异常短路**，异常在 insert 之前抛出 | **采纳 TEST**。已复核 `AuditLogAspect.java:39,49`：无 try/finally，异常直接中断 → 第 49 行永不执行。故"加 `REQUIRES_NEW`"无效，必须改 `try/finally` |
+| 4 | PERF-15 归因 | SEC：根因在后端 `PatientController.list()`，记在前端名下会误导修复 | **采纳 SEC**。R-39 前端部分降为 Medium，安全含义并入 R-07，两者标为同源修复 |
+| 5 | TEST-08 "依赖真实 PG" | PERF：这是性能验证前提，改 H2 是净损失｜TEST：接受撤回前半句 | **High→Medium**。`schema.sql` 用了 `BIGSERIAL`/`USING GIN`/`regclass`，H2 根本跑不起来；保留真实 PG + Testcontainers，只消除数据耦合 |
+| 6 | TEST-02 防超卖 | PERF：DB 原子 UPDATE 保证，mock 伪并发价值低，降 Medium｜TEST：接受，但"重复预约"仍成立 | **拆为 R-46(Medium)** 与 **R-25(High)**。降级理由成立：mock 恰好替换掉了承载正确性的那行 SQL |
+| 7 | TEST-01 定级 | PERF：补测不新增 SQL，无性能代价 | **维持 Critical**。PERF 的论证指向"成本低"，反而强化"应立即做" |
+| 8 | PERF-13 Hikari | SEC-18 认为是 DoS 面｜PERF 升级 | **Medium→High**。单次请求持连接可达数秒 × 10 连接 = 容量天花板 |
+| 9 | PERF-01 "零索引" | 三方交叉核查 | **修正措辞**为"27 张表仅 2 张有二级索引，业务基表外键全裸"，定级维持 |
+| 10 | SEC-22 "MyBatis SQL 打印" | PERF：全仓无 `log-impl`/`show-sql` 配置 | **撤回该子项**；`com.hospital: debug` 成立并升级为独立性能项 R-24 |
+| 11 | SEC-11 响应头注入 | SEC 自查撤回（Spring Security `StrictHttpFirewall` + Tomcat 头部校验） | **撤回**，重心改为 R-30 对象覆盖投毒 |
+| 12 | SEC-04 措辞 | SEC 自查 | **修正**为"已认证但无授权/无归属校验"，撤回"改手机号劫持账号" |
+| 13 | TEST-07 "状态机无单测" | TEST 自查：实际已覆盖 5 条迁移路径 | **拆为 R-59(Low)** 与 **R-48(Medium)** |
+| 14 | 测试类数量 | SEC/PERF 转述为 5 个；TEST 自查 | **实际 18 个测试类 / 101 个 `@Test` / 182 个生产文件（1:10）**；真实问题是"分布偏 + 无度量"而非"数量少" |
+
+**三方一致排除（不再列入问题清单）**：SQL 注入面干净（无 XML mapper，`${}` 零命中，排序用枚举列名）；收费金额不可被前端篡改（`pay(visitId)` 不收金额）；booking 模块的归属校验是全仓唯一规范实现；`NotificationStore` 的 `CopyOnWriteArrayList` + 头插（CAP=200，纳秒级）；`paymentStatus` 已正确批量化；slot 行锁粒度与持锁时间合理；`ChargeService` 单方法覆盖完整。
+
+---
+
+## 七、改进路线图
+
+> **进度（2026-09-09）**：P0 七项 ✅ 全部完成（实际 6 个子代理 + 主席收敛，41 改 / 5 新增）。
+> 验证：五个模块 `test-compile` BUILD SUCCESS；`hospital-core` 全量测试通过（106 → 109 个用例，新增 3 个权限回归用例）；前端 `type-check` 剩余 24 个错误均为既有错误。
+> 下方 P0 条目保留作为实施记录。
+
+### P0 · 安全止血（建议 48h 内，约 3 人日）— 已完成
+1. **R-01** 删 JWT 默认密钥 + 启动 fail-fast + 注入强密钥
+2. **R-02** `/fhir/**` 收口鉴权，禁止无参全量返回
+3. **R-03** file-service：`patientId` 必填 + 默认拒绝 + 8101/8102/8103 不映射宿主机端口
+4. **R-07 + R-08 + R-09 + R-18（同源，一次改造）** 三个 Controller 补 `@PreAuthorize`；患者/科室维度**下推到 SQL**（同时消掉全表扫描）；`doctorId` 改由服务端解析
+5. **R-12** 登录改 JSON body + 失败锁定（5 次锁 15 分钟）+ 接口限流
+6. **R-13 + R-14（同一改动，勿拆两次工单）** SSE：`SseEmitter(30_000)` + 心跳 + 连接上限 + 鉴权 + 广播移出事务 + 按 station 路由
+7. **R-10** 首次登录强制改密 + 密码策略（最小 10 位、复杂度、不与旧密码相同）
+
+### P1 · 性能地基 + 测试门禁（本迭代，约 8 人日）
+8. **R-04** 建索引（`CONCURRENTLY`，注意 PG 建索引锁表）— **所有性能修复的前置地基**
+9. **R-05** `selectList(null)` 全部下推 WHERE；`pay()` 改单条批量 UPDATE
+10. **R-23** Hikari `maximum-pool-size: 30`、`connection-timeout: 5000` — **必须先于 #11/#12 上线**
+11. **R-24** `com.hospital` 日志 DEBUG → INFO（顺带关闭 PHI 落日志）
+12. **R-17 + R-18** `listPage` 直接拼装读模型（33 次 SQL → 3 次）；`list()` 用 `groupingBy` 提至循环外
+13. **R-22** `RestTemplate` connect 3s / read 10s
+14. **R-06** 金额校验 + 边界测试
+15. **R-26 + R-55** JaCoCo `check`（先设 LINE ≥ 0.40 且不 failBuild）+ CI 增加 node 作业跑 `type-check`/`test`
+16. **R-27** 三个零测试模块各补 1 条"未认证访问必须 401"冒烟（成本最低、收益最高）
+
+### P2 · 结构性改造（后续迭代）
+17. **R-15** 启动重建改版本号守卫 + `user_id IS NULL` 短路（visit > 5 万行前必须完成）
+18. **R-16** 读模型改 `AFTER_COMMIT` + `@Async` 异步刷新
+19. **R-31/R-44** 审计改 `try/finally` + `REQUIRES_NEW`，补齐读接口留痕
+20. **R-19/R-20/R-21/R-37/R-38/R-41/R-42** 批量化与缓存改造
+21. **R-45** 登录限流落地后再提 BCrypt cost 至 12
+22. **R-58** DDL/DML 迁到 Flyway/Liquibase
+
+> **严格前置依赖**：#8（索引）→ #12；#10（连接池）→ #11/#12；#13（限流）→ #21（BCrypt cost）。
+
+---
+
+## 八、待人工复核（Agent 无法从代码判定）
+
+1. 生产/预发库 `SELECT count(*) FROM platform.sys_user WHERE password IS NULL;` — **R-57 免密分支已删除，NULL 密码账号现在会直接登录失败**，需提前排查并由管理员走重置接口处理，否则会出现"账号无故登不上"
+2. 部署环境是否真的注入了 `app.jwt.secret` / `PG_PASSWORD` / MINIO 密钥；CI/CD 环境变量清单核查
+3. 8101/8102/8103 在目标环境的安全组 / 网络策略是否真的隔离（决定 R-03/R-11 的实际可达性）
+4. MinIO 对含 `../` 对象 key 的实际归一化行为（决定 R-30 是否需再升级）
+5. 依赖 CVE：Spring Boot 3.2.5 / jjwt 0.12.5 / minio 8.5.7 / flying-saucer 9.1.22 按版本号无已知高危，建议跑一次 `osv-scanner` 或 OWASP Dependency-Check 确认
+6. `listPage` 补齐索引前后的真实 P50/P95 对比（需 10 万级数据 + `EXPLAIN ANALYZE`）
+7. SSE 广播在事务内同步执行的持锁放大（需模拟 100-300 订阅者 + 慢客户端实测）
+8. `pdf_status=FAILED` 在 CI(ubuntu) 上的实际占比（Windows 字体路径导致恒走降级分支）

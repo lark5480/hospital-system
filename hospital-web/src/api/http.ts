@@ -1,5 +1,6 @@
 import { useAuthStore } from '@/stores/auth'
 import axios, { type AxiosError } from 'axios'
+import { ElMessage } from 'element-plus'
 import type { Router } from 'vue-router'
 
 // 统一走 Gateway 的 /api 前缀;开发期由 vite.config.ts 的 proxy 转发到 :8104。
@@ -35,8 +36,17 @@ http.interceptors.response.use(
         const auth = useAuthStore()
         auth.token = undefined
         auth.authenticated = false
+        auth.mustChangePassword = false
         localStorage.removeItem('hospital_auth')
-        router?.push('/login')
+        // 已经在登录页(典型:登录失败)时不再重复跳转,避免重复导航告警
+        if (router?.currentRoute.value.path !== '/login') {
+          router?.push('/login')
+        }
+      }
+
+      // R-02/R-08/R-09: 鉴权收紧后,患者角色访问 B 端读接口会返回 403
+      if (status === 403) {
+        ElMessage.error('权限不足,无法执行该操作')
       }
     }
     return Promise.reject(error)

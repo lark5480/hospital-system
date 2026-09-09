@@ -18,11 +18,13 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
 import com.hospital.core.org.application.AuthService.LoginResult;
+import com.hospital.core.platform.config.DataInitializer;
 import com.hospital.core.platform.domain.SysUser;
 import com.hospital.core.platform.infrastructure.JwtTokenService;
 import com.hospital.core.platform.infrastructure.RoleAuthorityMapper;
 import com.hospital.core.platform.infrastructure.SysUserMapper;
 import com.hospital.core.platform.infrastructure.SysUserRoleMapper;
+import com.hospital.core.platform.security.LoginAttemptService;
 
 @ExtendWith(MockitoExtension.class)
 class AuthServiceTest {
@@ -33,13 +35,15 @@ class AuthServiceTest {
     @Mock JwtTokenService jwtTokenService;
     @Mock PasswordEncoder passwordEncoder;
     @Mock StaffService staffService;
+    /** R-10/R-12: 登录失败计数 / 锁定 / IP 限流(mock 化,单测不校验锁定行为)。 */
+    @Mock LoginAttemptService loginAttemptService;
 
     AuthService service;
 
     @BeforeEach
     void setUp() {
         service = new AuthService(sysUserMapper, sysUserRoleMapper, roleAuthorityMapper,
-                jwtTokenService, passwordEncoder, staffService);
+                jwtTokenService, passwordEncoder, staffService, loginAttemptService);
     }
 
     @Nested
@@ -90,6 +94,36 @@ class AuthServiceTest {
             LoginResult result = service.login("13900000000", "password");
 
             assertThat(result).isNull();
+        }
+
+        @Test
+        @DisplayName("R-57: 库中密码为 NULL → 拒绝登录(不留免密后门)")
+        void login_nullStoredPassword_returnsNull() {
+            SysUser user = buildSysUser(3L, "13800000004", "无密码账号", null);
+            when(sysUserMapper.findByPhone("13800000004")).thenReturn(user);
+
+            LoginResult result = service.login("13800000004", "anything");
+
+            assertThat(result).isNull();
+        }
+
+        @Test
+        @DisplayName("R-10: 使用默认弱口令登录 → mustChangePassword=true")
+        void login_defaultPassword_flagsMustChange() {
+            SysUser user = buildSysUser(4L, "13800000005", "新账号", "$2a$10$defaultHash");
+            when(sysUserMapper.findByPhone("13800000005")).thenReturn(user);
+            // 入参即默认弱口令,同一次 matches 调用既完成身份校验又触发 mustChangePassword 判定
+            when(passwordEncoder.matches(DataInitializer.DEFAULT_PASSWORD, "$2a$10$defaultHash")).thenReturn(true);
+            when(sysUserRoleMapper.findRoleCodesByUserId(4L)).thenReturn(Set.of("NURSE"));
+            when(roleAuthorityMapper.findAuthoritiesByRoles(List.of("NURSE"))).thenReturn(Set.of());
+            when(staffService.findDepartmentNameByUserId(4L)).thenReturn(null);
+            when(staffService.findDepartmentIdByUserId(4L)).thenReturn(null);
+            when(jwtTokenService.issue(eq("13800000005"), any(), any())).thenReturn("jwt-token");
+
+            LoginResult result = service.login("13800000005", DataInitializer.DEFAULT_PASSWORD);
+
+            assertThat(result).isNotNull();
+            assertThat(result.mustChangePassword()).isTrue();
         }
 
         @Test

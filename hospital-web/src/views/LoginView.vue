@@ -2,6 +2,8 @@
 import { reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import { AxiosError } from 'axios'
+import { ACCOUNT_LOCKED_MESSAGE, type LockedResponse } from '@/api/auth'
 import { useAuthStore } from '@/stores/auth'
 import { useTabsStore } from '@/stores/tabs'
 
@@ -28,10 +30,19 @@ async function handleLogin() {
     form.phone = ''
     form.password = ''
 
-    // 直接进系统,不强制改密(用户可从右上角主动改)
-    router.push('/dashboard')
-  } catch {
-    ElMessage.error('用户名或密码错误')
+    // R-10: 仍在用系统默认口令登录 → 强制先改密;否则直接进系统
+    router.push(auth.mustChangePassword ? '/change-password' : '/dashboard')
+  } catch (e: unknown) {
+    // R-12: 连续失败 5 次后后端返回 429(账号锁定),需与 401 区分提示
+    const status = e instanceof AxiosError ? e.response?.status : undefined
+    if (status === 429) {
+      const data = (e as AxiosError<LockedResponse>).response?.data
+      ElMessage.error(data?.error || ACCOUNT_LOCKED_MESSAGE)
+    } else if (status === 401) {
+      ElMessage.error('手机号或密码错误')
+    } else {
+      ElMessage.error('登录失败,请稍后重试')
+    }
   } finally {
     loading.value = false
   }

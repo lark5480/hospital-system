@@ -10,12 +10,14 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.http.MediaType;
 import org.springframework.security.web.authentication.WebAuthenticationDetailsSource;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 /**
@@ -28,6 +30,8 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 
     private static final String BEARER_PREFIX = "Bearer ";
     private final JwtTokenService jwtTokenService;
+    /** R-34: 改密 / 重置密码 / 登出后让旧 token 立即失效。 */
+    private final TokenRevocationService tokenRevocationService;
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
@@ -36,9 +40,19 @@ public class JwtAuthFilter extends OncePerRequestFilter {
         if (StringUtils.hasText(token)) {
             Claims claims = jwtTokenService.parse(token);
             if (claims != null) {
+                String username = jwtTokenService.usernameOf(claims);
+                // R-34: 该用户已改密 / 被重置密码 / 已登出 → 旧 token 立即失效,要求重新登录
+                if (tokenRevocationService.isRevoked(username)) {
+                    SecurityContextHolder.clearContext();
+                    response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+                    response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+                    response.setCharacterEncoding(StandardCharsets.UTF_8.name());
+                    response.getWriter().write("{\"error\":\"令牌已失效,请重新登录\"}");
+                    return;
+                }
                 List<String> authorities = jwtTokenService.authoritiesOf(claims);
                 var auth = new UsernamePasswordAuthenticationToken(
-                        jwtTokenService.usernameOf(claims),
+                        username,
                         null,
                         authorities.stream().map(SimpleGrantedAuthority::new).toList());
                 auth.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));

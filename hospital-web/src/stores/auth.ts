@@ -23,6 +23,11 @@ export const useAuthStore = defineStore('auth', () => {
   const roles = ref<string[]>([])
   const authorities = ref<string[]>([])
   const token = ref<string | undefined>(undefined)
+  /**
+   * R-10: 仍在使用系统默认口令(123456)。
+   * 为 true 时路由守卫会把用户挡在改密页,直到改密成功置回 false。
+   */
+  const mustChangePassword = ref(false)
 
   /**
    * 初始化认证:从 localStorage 恢复登录态(刷新免登);无缓存则保持未登录,由路由守卫跳 /login。
@@ -45,6 +50,8 @@ export const useAuthStore = defineStore('auth', () => {
       departmentId.value = s.departmentId ?? null
       roles.value = s.roles ?? []
       authorities.value = s.authorities ?? []
+      // 旧版本持久化的缓存没有该字段,按 false 处理(刷新后仍会由下次登录重新判定)
+      mustChangePassword.value = s.mustChangePassword === true
       authenticated.value = true
     } catch {
       localStorage.removeItem(STORAGE_KEY)
@@ -62,7 +69,8 @@ export const useAuthStore = defineStore('auth', () => {
         department: department.value,
         departmentId: departmentId.value,
         roles: roles.value,
-        authorities: authorities.value
+        authorities: authorities.value,
+        mustChangePassword: mustChangePassword.value
       })
     )
   }
@@ -84,8 +92,21 @@ export const useAuthStore = defineStore('auth', () => {
     departmentId.value = res.departmentId ?? null
     roles.value = res.roles
     authorities.value = res.authorities
+    // R-10: 后端判定该账号仍在用默认口令 → 前端强制改密
+    mustChangePassword.value = res.mustChangePassword === true
     authenticated.value = true
     persist()
+  }
+
+  /**
+   * R-10: 改密成功后调用,解除"强制改密"拦截。
+   * 只改内存中的标记不足以跨刷新,故同步更新持久化缓存。
+   */
+  function setMustChangePassword(value: boolean) {
+    mustChangePassword.value = value
+    if (authenticated.value) {
+      persist()
+    }
   }
 
   /** 登录入口:跳转登录页(手机号 + 密码)。 */
@@ -101,6 +122,7 @@ export const useAuthStore = defineStore('auth', () => {
     authorities.value = []
     department.value = null
     departmentId.value = null
+    mustChangePassword.value = false
     clearPersisted()
     router?.push('/login')
   }
@@ -111,7 +133,8 @@ export const useAuthStore = defineStore('auth', () => {
 
   return {
     ready, authenticated, username, name, department, departmentId, roles, authorities, token,
-    init, login, logout, hasAuthority, doLogin
+    mustChangePassword,
+    init, login, logout, hasAuthority, doLogin, setMustChangePassword
   }
 })
 

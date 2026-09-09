@@ -20,13 +20,28 @@ import ExamTasksView from '@/views/ExamTasksView.vue'
 import ReportsView from '@/views/ReportsView.vue'
 import RoleAuthView from '@/views/RoleAuthView.vue'
 import LoginView from '@/views/LoginView.vue'
+import ChangePasswordView from '@/views/ChangePasswordView.vue'
 import NotFoundView from '@/views/NotFoundView.vue'
 import { useAuthStore } from '@/stores/auth'
+
+/**
+ * R-10: 强制改密放行白名单。
+ * 已登录但仍在用系统默认口令时,除登录页与改密页外的所有路由都重定向到改密页。
+ */
+const PASSWORD_CHANGE_PATH = '/change-password'
+const MUST_CHANGE_WHITELIST = ['/login', PASSWORD_CHANGE_PATH]
 
 const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/login', name: 'login', component: LoginView, meta: { requiresAuth: false } },
+    // R-10: 强制改密页(独立全屏页,不进 MainLayout,因此不产生标签页)
+    {
+      path: PASSWORD_CHANGE_PATH,
+      name: 'change-password',
+      component: ChangePasswordView,
+      meta: { requiresAuth: true }
+    },
     {
       path: '/',
       component: MainLayout,
@@ -74,6 +89,10 @@ router.beforeEach((to) => {
   }
   if (to.path === '/login' && auth.authenticated) {
     return '/dashboard'
+  }
+  // R-10: 仍在用系统默认口令 → 除登录/改密页外一律拦到改密页
+  if (auth.authenticated && auth.mustChangePassword && !MUST_CHANGE_WHITELIST.includes(to.path)) {
+    return PASSWORD_CHANGE_PATH
   }
   return true
 })

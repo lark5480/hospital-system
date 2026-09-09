@@ -23,6 +23,7 @@ import com.hospital.core.clinical.domain.Order;
 import com.hospital.core.clinical.domain.Visit;
 import com.hospital.core.org.application.StaffService;
 import com.hospital.core.org.domain.Staff;
+import com.hospital.core.patient.application.PatientService;
 import com.hospital.core.platform.annotation.AuditLog;
 import com.hospital.core.platform.security.CurrentUserResolver;
 
@@ -39,8 +40,13 @@ public class VisitController {
 
     private final VisitService visitService;
     private final StaffService staffService;
+    // R-08: 用于解析当前登录患者档案,做 IDOR 归属校验
+    private final PatientService patientService;
 
     @Operation(summary = "分页查询就诊列表")
+    // R-08: 科室 / 全院维度的分页列表,入参只有关键字、无 patientId 可归属校验 ——
+    //       患者角色一律不放行(放行即等于可翻全院就诊),保持医护 / 管理员专用
+    @PreAuthorize("hasAnyAuthority('visit:entry','visit:audit','system:admin')")
     @GetMapping("/api/core/visits/page")
     public ResponseEntity<PageResult<VisitDetail>> listPage(
             @Parameter(description = "关键字搜索") @RequestParam(required = false) String keyword,
@@ -66,15 +72,28 @@ public class VisitController {
     }
 
     @Operation(summary = "查询当前科室就诊列表")
+    // R-08: 读接口对患者(patient:booking)开放;患者账号无科室上下文,
+    //       VisitService.list 已对"无科室上下文的全量查询"兜底返回空列表,不会因此泄全量就诊
+    @PreAuthorize("hasAnyAuthority('visit:entry','visit:audit','system:admin','patient:booking')")
     @GetMapping("/api/core/visits")
     public ResponseEntity<List<VisitDetail>> list() {
         return ResponseEntity.ok(visitService.list(currentDeptId()));
     }
 
     @Operation(summary = "获取就诊单详情")
+    // R-08: 读接口对患者(patient:booking)开放,并补 IDOR 归属校验(就诊单 ID 由前端直传)
+    @PreAuthorize("hasAnyAuthority('visit:entry','visit:audit','system:admin','patient:booking')")
     @GetMapping("/api/core/visits/{id}")
     public ResponseEntity<Visit> get(@Parameter(description = "就诊单ID") @PathVariable Long id) {
-        return ResponseEntity.ok(visitService.get(id));
+        Visit visit = visitService.get(id);
+        if (visit == null) {
+            return ResponseEntity.notFound().build();
+        }
+        // R-08: 患者角色只能读自己名下的就诊单
+        if (!canReadPatient(visit.getPatientId())) {
+            return ResponseEntity.status(403).build();
+        }
+        return ResponseEntity.ok(visit);
     }
 
     @Operation(summary = "删除就诊单")
@@ -87,8 +106,17 @@ public class VisitController {
     }
 
     @Operation(summary = "获取就诊单详细信息")
+    // R-08: 读接口对患者(patient:booking)开放,保留 IDOR 归属校验(visitId 由前端直传)
+    @PreAuthorize("hasAnyAuthority('visit:entry','visit:audit','system:admin','patient:booking')")
     @GetMapping("/api/core/visits/{id}/detail")
     public ResponseEntity<VisitDetail> detail(@Parameter(description = "就诊单ID") @PathVariable Long id) {
+        Visit visit = visitService.get(id);
+        if (visit == null) {
+            return ResponseEntity.notFound().build();
+        }
+        if (!canReadPatient(visit.getPatientId())) {
+            return ResponseEntity.status(403).build();
+        }
         return ResponseEntity.ok(visitService.getDetail(id));
     }
 
@@ -163,9 +191,16 @@ public class VisitController {
     }
 
     @Operation(summary = "查询患者历史就诊记录")
+    // R-08: 读接口对患者(patient:booking)开放;入参 patientId 一律经 resolveReadablePatientId 覆盖,
+    //       患者角色被强制改写成本人 patientId,不存在"改 id 看他人就诊史"的绕行路径
+    @PreAuthorize("hasAnyAuthority('visit:entry','visit:audit','system:admin','patient:booking')")
     @GetMapping("/api/core/visits/patient-history")
     public ResponseEntity<List<PatientVisitHistoryVO>> patientHistory(@Parameter(description = "患者ID") @RequestParam Long patientId) {
-        return ResponseEntity.ok(visitService.getPatientHistory(patientId));
+        Long effectivePatientId = resolveReadablePatientId(patientId);
+        if (effectivePatientId == null) {
+            return ResponseEntity.status(403).build();
+        }
+        return ResponseEntity.ok(visitService.getPatientHistory(effectivePatientId));
     }
 
     private Long currentDeptId() {
@@ -175,6 +210,35 @@ public class VisitController {
         if (staff == null) return null;
         if ("ADMIN".equals(staff.getPosition()) || "system:admin".equals(staff.getPosition())) return null;
         return staff.getDeptId();
+    }
+
+    /**
+     * R-08: 归属校验 —— 以 patientId 为入参的读接口统一走这里。
+     * 员工(医护 / 管理员,按 org.staff 判定)允许按入参查询;
+     * 患者角色强制用"当前登录用户绑定的 patientId"覆盖入参,解析不到档案则拒绝。
+     *
+     * @return 允许查询的患者 ID;null 表示无权(调用方返回 403)
+     */
+    private Long resolveReadablePatientId(Long requestedPatientId) {
+        if (isStaff()) {
+            return requestedPatientId;
+        }
+        return patientService.currentPatientId();
+    }
+
+    /** R-08: 当前主体是否有权读取指定患者的数据(患者角色仅可看自己)。 */
+    private boolean canReadPatient(Long targetPatientId) {
+        if (isStaff()) {
+            return true;
+        }
+        Long own = patientService.currentPatientId();
+        return own != null && own.equals(targetPatientId);
+    }
+
+    /** R-08: 当前登录主体是否为员工(医护 / 管理员);患者账号返回 false。 */
+    private boolean isStaff() {
+        String phone = CurrentUserResolver.resolveUsername();
+        return phone != null && staffService.findByPhone(phone) != null;
     }
 
     @Operation(summary = "确单")

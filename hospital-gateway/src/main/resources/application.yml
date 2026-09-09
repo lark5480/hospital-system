@@ -33,6 +33,10 @@ spring:
           uri: http://${FILE_HOST:localhost}:8103
           predicates:
             - Path=/api/files/**
+          filters:
+            # R-03: 由网关代发内部调用令牌 —— 令牌只存在于服务端(网关 ↔ file-service),
+            # 浏览器侧永远不接触,避免"前端直连就必须把令牌下发到浏览器"的死结。
+            - AddRequestHeader=X-Internal-Token, ${file.internal-token}
         - id: hospital-patient
           uri: http://${CORE_HOST:localhost}:8101
           predicates:
@@ -62,6 +66,11 @@ spring:
           uri: http://${CORE_HOST:localhost}:8101
           predicates:
             - Path=/swagger-ui.html,/swagger-ui/**,/api-docs/**,/v3/api-docs/**
+
+# R-03: 调用 file-service 的内部调用令牌,须与 file-service 侧配置同一把。
+# 生产必须通过环境变量 FILE_INTERNAL_TOKEN 注入;留空时 file-service 在 prod profile 下会拒绝启动。
+file:
+  internal-token: ${FILE_INTERNAL_TOKEN:}
 
 logging:
   level:

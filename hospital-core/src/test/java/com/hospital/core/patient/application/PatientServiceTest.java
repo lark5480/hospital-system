@@ -8,6 +8,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.util.List;
 import java.util.Set;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -17,6 +18,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
@@ -144,16 +149,86 @@ class PatientServiceTest {
         @Test
         @DisplayName("患者存在 → 更新成功并返回")
         void update_success() {
-            Patient existing = buildPatient("旧名", "13800000005");
-            existing.setId(5L);
-            when(patientMapper.selectById(5L)).thenReturn(existing);
+            withAuthority("system:admin");
+            try {
+                Patient existing = buildPatient("旧名", "13800000005");
+                existing.setId(5L);
+                when(patientMapper.selectById(5L)).thenReturn(existing);
 
-            Patient updateData = new Patient();
-            updateData.setName("新名");
-            Patient result = service.update(5L, updateData);
+                Patient updateData = new Patient();
+                updateData.setName("新名");
+                Patient result = service.update(5L, updateData);
 
-            assertThat(result.getName()).isEqualTo("新名");
-            verify(patientMapper).updateById((Patient) any());
+                assertThat(result.getName()).isEqualTo("新名");
+                verify(patientMapper).updateById((Patient) any());
+            } finally {
+                SecurityContextHolder.clearContext();
+            }
+        }
+
+        // R-07: 姓名/身份证属身份标识字段,仅 system:admin 可改,
+        // 否则持有 visit:entry 的账号就能把患者身份改成任意合法号码(身份冒用/医保欺诈)
+        @Test
+        @DisplayName("非管理员修改姓名 → 拒绝(AccessDeniedException)")
+        void update_changeNameWithoutAdmin_throws() {
+            withAuthority("visit:entry");
+            try {
+                Patient existing = buildPatient("旧名", "13800000005");
+                existing.setId(5L);
+                when(patientMapper.selectById(5L)).thenReturn(existing);
+
+                Patient updateData = new Patient();
+                updateData.setName("新名");
+
+                assertThatThrownBy(() -> service.update(5L, updateData))
+                        .isInstanceOf(AccessDeniedException.class)
+                        .hasMessageContaining("管理员权限");
+                verify(patientMapper, never()).updateById((Patient) any());
+            } finally {
+                SecurityContextHolder.clearContext();
+            }
+        }
+
+        @Test
+        @DisplayName("非管理员修改身份证 → 拒绝(AccessDeniedException)")
+        void update_changeIdCardWithoutAdmin_throws() {
+            withAuthority("visit:entry");
+            try {
+                Patient existing = buildPatient("旧名", "13800000005");
+                existing.setIdCard("110101199001011234");
+                existing.setId(5L);
+                when(patientMapper.selectById(5L)).thenReturn(existing);
+
+                Patient updateData = new Patient();
+                updateData.setIdCard("110101199001019999");
+
+                assertThatThrownBy(() -> service.update(5L, updateData))
+                        .isInstanceOf(AccessDeniedException.class)
+                        .hasMessageContaining("管理员权限");
+                verify(patientMapper, never()).updateById((Patient) any());
+            } finally {
+                SecurityContextHolder.clearContext();
+            }
+        }
+
+        @Test
+        @DisplayName("非管理员修改手机号 → 静默还原为旧值(防账号接管)")
+        void update_changePhoneWithoutAdmin_keepsOldPhone() {
+            withAuthority("visit:entry");
+            try {
+                Patient existing = buildPatient("旧名", "13800000005");
+                existing.setId(5L);
+                when(patientMapper.selectById(5L)).thenReturn(existing);
+
+                Patient updateData = new Patient();
+                updateData.setPhone("13900000000");
+                Patient result = service.update(5L, updateData);
+
+                assertThat(result.getPhone()).isEqualTo("13800000005");
+                assertThat(updateData.getPhone()).isEqualTo("13800000005");
+            } finally {
+                SecurityContextHolder.clearContext();
+            }
         }
 
         @Test
@@ -164,6 +239,13 @@ class PatientServiceTest {
             assertThatThrownBy(() -> service.update(999L, new Patient()))
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining("患者不存在");
+        }
+
+        /** R-07: 以给定 authority 构造 SecurityContext,模拟不同角色调用 update。 */
+        private void withAuthority(String authority) {
+            SecurityContextHolder.getContext().setAuthentication(
+                    new UsernamePasswordAuthenticationToken(
+                            "tester", null, List.of(new SimpleGrantedAuthority(authority))));
         }
     }
 

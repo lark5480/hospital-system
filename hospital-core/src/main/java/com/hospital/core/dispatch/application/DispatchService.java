@@ -10,6 +10,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.event.TransactionalEventListener;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.hospital.core.booking.domain.AppointmentCreatedEvent;
@@ -26,6 +28,7 @@ import com.hospital.core.report.domain.Report;
 import com.hospital.core.report.domain.ReportPdfEvent;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 
 /**
  * 排队分发引擎(应用服务)。
@@ -35,6 +38,7 @@ import lombok.RequiredArgsConstructor;
  */
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class DispatchService {
 
     private final ExamTaskMapper taskMapper;
@@ -98,8 +102,8 @@ public class DispatchService {
         syncBoard(t);
         // 回写预约单:该预约首个任务开始 = 到院(CHECKED_IN)
         maybePublishCheckedIn(t.getAppointmentId());
-        // SSE推送
-        sseController.broadcastBoardUpdate(new BoardUpdateEvent(t.getStation(), taskId, "start"));
+        // SSE推送(R-13: 事务提交后再广播)
+        broadcastAfterCommit(new BoardUpdateEvent(t.getStation(), taskId, "start"));
     }
 
     /** 工位完成检查某任务。若某预约的全部任务均已终态(完成/跳过),自动生成报告。 */
@@ -119,8 +123,8 @@ public class DispatchService {
 
         // 自动叫号:推进同 station 下一位待检患者(过号重排由人工 reorder-tail 处理)
         callNext(t.getStation());
-        // SSE推送
-        sseController.broadcastBoardUpdate(new BoardUpdateEvent(t.getStation(), taskId, "complete"));
+        // SSE推送(R-13: 事务提交后再广播;注册晚于 callNext,提交时顺序与改造前一致)
+        broadcastAfterCommit(new BoardUpdateEvent(t.getStation(), taskId, "complete"));
     }
 
     /**
@@ -223,8 +227,8 @@ public class DispatchService {
                     cand.getPatientName(), cand.getStation(), cand.getItemName(), calledAt));
             // 回写预约单:该预约首个任务开始 = 到院(CHECKED_IN)
             maybePublishCheckedIn(cand.getAppointmentId());
-            // SSE推送
-            sseController.broadcastBoardUpdate(new BoardUpdateEvent(station, cand.getId(), "callNext"));
+            // SSE推送(R-13: 事务提交后再广播)
+            broadcastAfterCommit(new BoardUpdateEvent(station, cand.getId(), "callNext"));
             return cand;
         }
         return null;
@@ -245,8 +249,8 @@ public class DispatchService {
         t.setSeq(maxSeq + 1);
         taskMapper.updateById(t);
         syncBoard(t);
-        // SSE推送
-        sseController.broadcastBoardUpdate(new BoardUpdateEvent(t.getStation(), taskId, "reorder"));
+        // SSE推送(R-13: 事务提交后再广播)
+        broadcastAfterCommit(new BoardUpdateEvent(t.getStation(), taskId, "reorder"));
     }
 
     /** 跳过:放弃某任务置 SKIPPED(用于患者离开等场景)。仅待检/检查中可跳过。 */
@@ -263,8 +267,8 @@ public class DispatchService {
         maybeGenerateReport(t.getAppointmentId(), t.getPatientId());
         // 该工位空出来了,自动叫号下一位
         callNext(t.getStation());
-        // SSE推送
-        sseController.broadcastBoardUpdate(new BoardUpdateEvent(t.getStation(), taskId, "skip"));
+        // SSE推送(R-13: 事务提交后再广播;注册晚于 callNext,提交时顺序与改造前一致)
+        broadcastAfterCommit(new BoardUpdateEvent(t.getStation(), taskId, "skip"));
     }
 
     /**
@@ -287,8 +291,8 @@ public class DispatchService {
         t.setStartedAt(null);
         taskMapper.updateById(t);
         syncBoard(t);
-        // SSE推送
-        sseController.broadcastBoardUpdate(new BoardUpdateEvent(t.getStation(), taskId, "requeue"));
+        // SSE推送(R-13: 事务提交后再广播)
+        broadcastAfterCommit(new BoardUpdateEvent(t.getStation(), taskId, "requeue"));
     }
 
     /** 活跃工位列表(存在 PENDING/IN_PROGRESS 任务的 station),供大屏页选择。 */
@@ -357,6 +361,30 @@ public class DispatchService {
                 new QueryWrapper<ExamTask>().eq("appointment_id", appointmentId).eq("status", "IN_PROGRESS"));
         if (inProgress >= 1) {
             eventPublisher.publishEvent(new AppointmentStatusEvent(appointmentId, "CHECKED_IN"));
+        }
+    }
+
+    /**
+     * R-13: SSE 广播必须挪到数据库事务提交之后执行。
+     * 原来在 @Transactional 方法内同步调用 broadcastBoardUpdate，慢客户端(网络拥塞/半开连接)会把
+     * 数据库事务拖长、持锁不放，极端情况耗尽连接池；改为注册事务同步回调在 afterCommit 推送。
+     * 无事务上下文(如单元测试、被非事务方法调用)时保持原行为直接推送。
+     */
+    private void broadcastAfterCommit(BoardUpdateEvent event) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    try {
+                        sseController.broadcastBoardUpdate(event);
+                    } catch (Exception e) {
+                        // R-13: 事务已提交，推送失败不能回滚业务，仅记录告警
+                        log.warn("[SSE] 看板事件广播失败(事务已提交,不影响业务): {}", e.toString());
+                    }
+                }
+            });
+        } else {
+            sseController.broadcastBoardUpdate(event);
         }
     }
 }

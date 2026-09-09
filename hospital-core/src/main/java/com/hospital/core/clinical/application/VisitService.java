@@ -9,6 +9,9 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -32,9 +35,11 @@ import com.hospital.core.patient.application.PatientService;
 import com.hospital.core.platform.security.CurrentUserResolver;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class VisitService {
     
     private final VisitMapper visitMapper;
@@ -496,6 +501,15 @@ public class VisitService {
 
     /** 就诊列表(分页前兼容,未分页)。 */
     public List<VisitDetail> list(Long currentDeptId) {
+        // R-08: currentDeptId == null 意味着"看全院"(管理员)或"当前用户不是科室员工"(患者账号)。
+        // 原实现在此分支下 selectList(null) 返回全量就诊,而 VisitController.currentDeptId()
+        // 对患者账号同样返回 null —— 任意患者一次请求即可拉走全院就诊。
+        // 现仅对持有 system:admin 的主体放行全量;其余(含患者 / 无科室员工)直接返回空列表并告警。
+        if (currentDeptId == null && !hasSystemAdminAuthority()) {
+            log.warn("[R-08] 拒绝无科室上下文的全量就诊查询,疑似越权全量拉取: user={}",
+                    CurrentUserResolver.resolveUsername());
+            return List.of();
+        }
         List<Order> allOrders = orderMapper.selectList(null);
         List<Visit> visits = visitMapper.selectList(null).stream()
                 .filter(v -> isVisibleToDept(v, currentDeptId, allOrders))  // 科室过滤(含执行科室)
@@ -655,5 +669,22 @@ public class VisitService {
         if (phone == null) return null;
         var staff = staffService.findByPhone(phone);
         return staff == null ? null : staff.getId();
+    }
+
+    /**
+     * R-08: 当前主体是否持有 system:admin(唯一允许"看全院"的角色)。
+     * 直接读 SecurityContext,不新增构造参数,保持既有方法签名与其它调用点不变。
+     */
+    private boolean hasSystemAdminAuthority() {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth == null || auth.getAuthorities() == null) {
+            return false;
+        }
+        for (GrantedAuthority authority : auth.getAuthorities()) {
+            if ("system:admin".equals(authority.getAuthority())) {
+                return true;
+            }
+        }
+        return false;
     }
 }

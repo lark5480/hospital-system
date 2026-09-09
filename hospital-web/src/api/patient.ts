@@ -7,7 +7,9 @@ import type {
   Slot,
   AppointmentDetail,
   BookingPayload,
-  ReportRecord
+  ReportRecord,
+  PatientNameView,
+  PatientPageQuery
 } from '@/types/patient'
 
 export function registerPatient(payload: PatientRegisterPayload) {
@@ -35,8 +37,19 @@ export function getCurrentPatient() {
   return http.get<Patient>('/patient/me').then((r) => r.data)
 }
 
-export function listPatients() {
-  return http.get<Patient[]>('/patient').then((r) => r.data)
+/** R-07: 分页查询患者列表。后端默认 1 / 200,pageSize 上限 500。 */
+export function listPatients(query?: PatientPageQuery) {
+  return http.get<Patient[]>('/patient', { params: query }).then((r) => r.data)
+}
+
+/**
+ * R-07: 按 ID 批量查询患者姓名(仅 id + name,不含 PII)。
+ * 用于替代大屏 / 下拉框的全量患者拉取,和 listPatients 的分页上限配套。
+ */
+export function fetchPatientNames(ids: number[]) {
+  return http
+    .get<PatientNameView[]>('/patient/names', { params: { ids: ids.join(',') } })
+    .then((r) => r.data)
 }
 
 export function updatePatient(id: number, payload: PatientRegisterPayload) {
