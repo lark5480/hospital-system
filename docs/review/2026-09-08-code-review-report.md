@@ -5,7 +5,7 @@
 - **参与 Agent**：SECURITY（安全）、PERFORMANCE（性能）、TESTING（测试质量）
 - **流程**：第 1 轮三方独立审查 → 第 2 轮交叉质询（反驳 / 降级 / 升级 / 补充 / 自我修正 / 预判辩护）→ 第 3 轮主席收敛
 - **产出**：61 条问题（6 Critical / 22 High / 26 Medium / 7 Low），含 8 条质询后新增、9 条质询后改级
-- **实施状态（2026-09-10 更新）**：P0 + P1 + P2 已全部落盘 —— 原 61 条中 **54 项已修复、1 项已缓解、6 项部分修复**；另在复核中发现 **2 条审核漏项（R-62 Critical、R-63 High）尚未修复**。详见下方「实施状态总览」与「遗留」
+- **实施状态（2026-09-10 更新）**：P0 + P1 + P2 已全部落盘；复核中发现的 2 条审核漏项（R-62 Critical / R-63 High）亦已修复 —— 合计 63 条：**57 项已修复、1 项已缓解、5 项部分修复**。详见下方「实施状态总览」
 - **定级标准**：
   - **Critical**：可直接导致批量敏感数据泄露 / 权限完全失守，或线上必然不可用
   - **High**：需要低门槛前置条件即可造成实质损害，或数据量到 10 万级必然劣化到不可用
@@ -41,6 +41,8 @@
 | R-59 | `VisitStatus` 参数化矩阵测试。**实测纠正**：`of(null)` 静默降级 `CREATED`，但 `of("")` / `of("NOT_A_STATUS")` 会抛 `IllegalArgumentException`（并非全部静默），且大小写敏感；已按实际行为固化并标注不一致 | 新增 `VisitStatusTest` |
 | R-60 | PDF 字体路径跨平台：路径配置化为 `app.report.pdf.font-path`，并内置 Windows/Linux/macOS 候选列表，全部缺失时沿用降级 + 告警；新增 PDF 产物断言（`%PDF-` 魔数、`%%EOF`），并在强制无字体环境下验证降级路径 | `ReportPdfGenerator`、`application.yml`、新增 `ReportPdfGeneratorTest` |
 | R-61 | 前端零测试：引入 vitest + jsdom + `@vue/test-utils`，`vitest.config.ts` **复用 `vite.config.ts` 的插件**（否则按需引入类问题在测试里永远暴露不出来），19 个用例覆盖 polling / auth 存储与权限 / 密码校验 / element-plus 解析 | `package.json`、新增 `vitest.config.ts` 与 4 个 spec |
+| R-62 | **文件服务收口到 core 代理**（Critical，复核漏项）：撤除网关 `hospital-file` 路由与内部令牌配置；新增 `FileProxyController`（`/api/core/files` 的 upload / list / download）在此完成归属判定 —— 患者强制覆盖为本人 patientId、员工下载不传 patientId 返回 403；`FileServiceClient` 补 `list` / `upload`；前端改走 `/core/files` 并补归属参数。守护测试为**反向断言**（路由不得复活 + 令牌不得回流网关） | 网关 `application.yml`、新增 `platform/api/FileProxyController`、`FileServiceClient`、file-service `FileController`、`api/file.ts`、`FileView.vue`、新增 `FileProxyControllerTest` / `GatewayInternalTokenAbsenceTest` |
+| R-63 | `VisitService.listExams()` 的逐行 `selectById` 改为 `selectBatchIds` + 分组，查询数 `1+N` → `1+1`（High，复核漏项：与 R-19 同类但位置不在 R-19 覆盖范围内） | `VisitService` |
 | R-15 | 启动期全量重建：新增 `platform.meta` 水位表；`initAll()` 加版本守卫 + 主键游标分批；`migrateUsers()` 先 `count(user_id IS NULL)` 短路。实测启动步进总耗时 **36ms** | `DataInitializer`、`VisitReadModelService`、`schema.sql` |
 | R-16 | 读模型写放大：新增一条聚合 SQL（`VisitReadModelMapper.selectAggregate`）取代 2 次全量 selectList；名称解析走 `NameCache`；`addOrder/editOrder/cancelOrder` 复用刷新结果，不再重复 `getDetail()`。**异步刷新主动放弃**（会破坏 `VisitReadModelTest` 的事务可见性），已在 javadoc 写明 | `VisitReadModelService`、`VisitReadModelMapper`、`VisitService` |
 | R-19 | 名称解析 N+1：新增 `NameCache`（TTL 5min / 上限 5000 / 惰性清理），lab / pharmacy / report 列表改为批量解析（一次 `WHERE id IN`），出参结构不变 | 新增 `platform/support/NameCache`、`LabService`、`PrescriptionService`、`ReportService` |
@@ -86,35 +88,44 @@
 | `StaffView.vue` 既有编译错误 | `patientApi.resetPassword` → `resetPatientPassword`；`Staff` 类型补 `userId` |
 | 403 无统一提示 | `http.ts` 补 403 中文提示；401 时不再重复跳转登录页 |
 
-### 遗留（本轮新发现的后续项，均非原报告条目）
+### 复核中发现的审核漏项（R-62 / R-63 —— 均已修复）
 
-- **R-62【Critical，审核漏项】文件下载的归属校验可被自身列表接口绕过，且网关把内部令牌无差别发给所有调用者**。
-  - **证据链**：
+> 这两条不在原 61 条内，是在回答「待拍板 5 件事」时复核代码发现的。R-62 是 Critical 且**匿名可利用**，已按原「决策 4 方案 A」落地（该方案的定性同时从"治本优化"上调为"唯一有效修法"）。
+
+- **R-62【Critical】文件下载的归属校验可被自身列表接口绕过，且网关把内部令牌无差别发给所有调用者**。
+  - **证据链（修复前）**：
     1. `hospital-gateway` 的 `SecurityConfig` 是 `@Profile("!iam")` + `anyExchange().permitAll()`，而**全仓不存在 `application-iam.yml`**、`application.yml` 里也没有 `spring.profiles.active=iam` → 网关**实际永远**运行在"全部放行"分支（`SecurityConfig.java:16-24`）；
     2. 我为 R-03 加的网关过滤器是 `AddRequestHeader=X-Internal-Token, ...`（`gateway/application.yml` 的 `hospital-file` 路由），它对**所有**匹配 `/api/files/**` 的请求注入令牌，**不区分调用者身份** → 在默认部署下"内部令牌"不构成任何安全边界，只防"绕过网关直连 8103"；
     3. `FileController.list()` / `mine()` 的 `patientId` 仍是 `required = false`（`FileController.java:166-178`），**不传就返回全部对象**，且 `FileMeta` 里带着每个对象的 `patientId`（`FileController.java:180-199`）；
     4. `download()` 的归属校验是"调用方自报的 `patientId` vs 对象元数据"（`FileController.java:140-146`）。
   - **利用步骤**：匿名 → `GET /api/files`（不带任何参数）拿到全部 `objectName` + `patientId` → 带着该 `patientId` 请求 `GET /api/files/{objectName}?patientId=<上一步拿到的>` → 校验通过 → 拿到患者报告 PDF。
   - **后果**：**未认证用户可枚举并下载全部患者报告。** 我原先给 R-03 定"已修复"是过度乐观 —— 单看 `download` 的改动是对的，但 `list` 把校验所需的"钥匙"（patientId ↔ objectName 的对应关系）直接送了出去，纵深防御等于没有。
-  - **修复方向（即原「决策 4 方案 A」，性质从"锦上添花"上调为"必须做"）**：撤掉网关 `/api/files/**` 路由，upload / list / download 一律改由 core 代理（复用已有的 `FileServiceClient` 与 `PatientController.downloadReport` 的归属校验），让 file-service 只在内网可达；同时 `list()` 的 `patientId` 改为必填。
-  - **同源简化方案（若暂不做代理）**：`FileController.list/mine` 的 `patientId` 改必填（最小止血，但令牌仍无差别发放，边界依旧不存在）。
-- **R-63【High，审核漏项】`VisitService.listExams()` 循环内逐行 `visitMapper.selectById`**（`VisitService.java:781-787`）：先全量加载 EXAM 医嘱，再对每条回查就诊/患者/医生。属 R-19 同类 N+1，但位置不在 R-19 列的三个类里，故未被覆盖。修法与 R-19 一致（批量 `selectBatchIds` + 分组）。
+  - **根因**：`list` 把 `download` 校验所需的"钥匙"（patientId ↔ objectName 的对应关系）自己送了出去，纵深防御等于没有；更根本的是 R-03 把归属校验放在了**没有身份上下文的地方**（file-service 无用户体系）。
+  - **修复（方案 A 落地）**：
+    | 改动 | 内容 |
+    |---|---|
+    | 撤路由 | 删除网关 `hospital-file` 路由与 `file.internal-token` 配置 —— 网关不再持有令牌、不再代发 `X-Internal-Token` |
+    | core 代理 | 新增 `platform/api/FileProxyController`（`/api/core/files` 的 upload / list / download）。归属判定在此完成：患者角色被**强制覆盖**为本人 patientId，解析不到本人档案即 403；下载必须能确定归属，员工不传 `patientId` 也返回 403 而不是猜一个值 |
+    | 下游客户端 | `FileServiceClient` 补 `list` / 通用 `upload`；`download` 保持 patientId 必填 |
+    | file-service | `mine` 的 `patientId` 改必填；`list` 保留"全量列举"但显式写明该语义**仅允许在"仅内网可达 + core 已鉴权"下存在**。**实现时发现原方案有缺陷**：管理台需要全量列出 REPORT 文件，强行把 `list` 的 `patientId` 改成必填会直接 400 打断该功能 —— 真实边界是"公网入口"而非"参数必填"，故按此修正 |
+    | 前端 | `api/file.ts` 全部改走 `/core/files`，`downloadFile(objectName, patientId)` 补归属参数；`FileView.vue` 对无归属对象直接提示，不再发必然 403 的请求 |
+    | 守护测试 | `GatewayRouteGuardTest` 改为**反向断言**（路由 id / `/api/files` 谓词 / 8103 URI 都不得存在）；原 `GatewayDefaultTokenContextTest` 的契约已被反转，重写为 `GatewayInternalTokenAbsenceTest`（网关不得持有令牌配置、不得代发该头）；新增 `FileProxyControllerTest` 10 个用例锁定归属覆盖、403 语义与错误翻译 |
+  - **修复后的边界**：file-service 只在内网可达；对外唯一入口是 core 的 `/api/core/files`，受 JWT 鉴权链约束。注意 `list` 仍支持全量语义（管理台需要），这依赖"内网可达"这一前提 —— 若将来暴露 8103，必须先给 file-service 补真正的鉴权。
+- **R-63【High】`VisitService.listExams()` 循环内逐行 `visitMapper.selectById`**：先全量加载 EXAM 医嘱，再对每条回查就诊/患者/医生。属 R-19 同类 N+1，但位置不在 R-19 列的三个类里，故未被覆盖。已改为一次 `selectBatchIds` + 分组，查询次数由 `1+N` 降为 `1+1`。
 - **R-21 医嘱批量写入**（部分完成）：收费记录已批量化，医嘱因需回填自增主键给 `charge.order_id` 而保持逐条，已留 `TODO(P3)`
 - **R-39 暴露的类型债**：开启按需引入后若生成 `components.d.ts`，`vue-tsc` 会立刻暴露 **34 个既有类型问题**（`el-table` 作用域插槽的 row 被推断为 `DefaultRow`、`el-tag :type` 传入了含空串的联合类型）。本轮为守住"type-check 0 错误"基线关闭了 dts 生成；修完这 34 处即可打开，换取组件级类型安全
 - **R-56 的行为变化**：改 sessionStorage 后**新开标签页不再共享登录态**（单标签刷新仍免登）。这是收窄 XSS 窗口的代价，两全需 httpOnly Cookie + CSRF（P3）
 - **R-60 的运维项**：容器 / CI（ubuntu）无中文字体，PDF 中文会走降级（方框）。建议镜像挂载字体或设置 `PDF_FONT_PATH`
 - **R-47 未覆盖部分**：`BookingService` 的号源生成 / 过期清理 / 状态机用例仍缺（只补了并发与幂等）
-- **决策 4 方案 A（已上调为必须做）**：见上方 R-62 —— 它不只是"让 file-service 退到内网"的治本优化，而是关闭"匿名枚举 + 下载全部患者报告"这条通路的**唯一有效手段**（方案 B 的网关注入令牌对匿名调用者同样生效，起不到身份区分作用）
 - **决策 1 结论**：不开放 `/visits/page`、`/reports/list`、`/reports/type` 给患者，也不新建 `/mine`。C 端能力一律走 `PatientController` 下自带归属校验的专用端点（`/api/patient/reports` 等），已可满足现有 `patient/*` 全部页面
 
 ### 新增运维依赖（部署清单必须同步）
 
 1. `APP_JWT_SECRET`：≥32 字节随机串，未注入时 prod 启动失败
-2. `FILE_INTERNAL_TOKEN`：core 与 file-service 必须一致，未注入时 file-service 在 prod 下启动失败
-   - **网关侧默认值必须非空**：`AddRequestHeader` 绑定 `NameValueConfig`，value 为空会让网关启动失败
-     （`Binding to target ... Property: .value Reason: 不能为空`）。故网关配置为
-     `${FILE_INTERNAL_TOKEN:dev-no-token}`，不能写成 `${FILE_INTERNAL_TOKEN:}`。已由
-     `GatewayDefaultTokenContextTest` 守护该回归
+2. `FILE_INTERNAL_TOKEN`：**只在 core 与 file-service 之间**，两边必须一致；未注入时 file-service 在 prod 下启动失败
+   - **R-62 后网关不再参与**：原先网关有 `hospital-file` 路由并代发该令牌，现已撤除（网关默认 profile 即 `permitAll`，它代发的令牌对匿名调用者同样生效，不构成边界）。
+     随之失效的旧约束（网关侧 `AddRequestHeader` 的 value 不得为空，否则启动失败）已不存在，
+     由 `GatewayInternalTokenAbsenceTest` 反向守护"令牌不得回流到网关"
 3. **Redis 进入认证关键路径**：`TokenRevocationService` 默认 fail-closed，Redis 不可用会拒绝全部请求（`app.jwt.revocation-fail-open=true` 可切为放行，但削弱吊销语义）
 
 ---
@@ -133,7 +144,7 @@
 
 ## 二、Critical 问题（6 条）
 
-> **状态**：R-01 ✅ ｜ R-02 ✅ ｜ R-03 ⚠️ **降级为部分修复**（详见 R-62）｜ R-04 ✅（47 条索引）｜ R-05 ✅（全表扫描下推 WHERE）｜ R-06 ✅（金额校验 + 精度）—— **5 项完成、1 项部分修复**
+> **状态**：R-01 ✅ ｜ R-02 ✅ ｜ R-03 ✅（归属校验闭环到 core 代理，见 R-62）｜ R-04 ✅（47 条索引）｜ R-05 ✅（全表扫描下推 WHERE）｜ R-06 ✅（金额校验 + 精度）—— **6 项全部完成**
 
 ### R-01 JWT 签名密钥硬编码为公开默认值，可自签任意身份令牌
 - **维度** 安全（SEC-01）｜**共识** 三方无异议

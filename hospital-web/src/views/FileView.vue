@@ -46,8 +46,14 @@ async function loadReportFiles() {
 }
 
 async function downloadMeta(f: FileMeta) {
+  // R-62: 下载必须带 patientId —— 它是服务端归属校验的依据。
+  // 列表里 patientId 为空的对象(历史数据/无归属上传)无法通过校验,直接提示而不是发一个必然 403 的请求。
+  if (f.patientId == null) {
+    ElMessage.warning('该文件没有患者归属,无法下载')
+    return
+  }
   try {
-    const blob = await downloadFile(f.objectName)
+    const blob = await downloadFile(f.objectName, f.patientId)
     saveBlob(blob, f.objectName)
   } catch {
     ElMessage.error('下载失败')
@@ -76,7 +82,7 @@ onMounted(loadReportFiles)
       class="hint"
       type="info"
       :closable="false"
-      title="文件服务为独立抽出服务,经 API Gateway(/api/files)调用 MinIO,演示微服务独立伸缩与对象存储接入。体检报告 PDF 自动生成并归档,可在下方查询与下载。"
+      title="文件服务为独立抽出服务,经 core 的 /api/core/files 代理调用 MinIO,演示微服务独立伸缩与对象存储接入。体检报告 PDF 自动生成并归档,可在下方查询与下载。"
     />
 
     <el-table :data="uploaded" border stripe empty-text="暂无上传记录" style="margin-top: 12px">

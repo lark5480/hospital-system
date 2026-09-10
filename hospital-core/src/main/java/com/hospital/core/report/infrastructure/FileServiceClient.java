@@ -2,6 +2,7 @@ package com.hospital.core.report.infrastructure;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -15,8 +16,11 @@ import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.util.UriComponentsBuilder;
 
+import java.io.IOException;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -125,6 +129,93 @@ public class FileServiceClient {
         } catch (RestClientException ex) {
             // 统一为 IllegalStateException,供调用方(如 PatientController)做"重新生成+重传"兜底
             throw new IllegalStateException("文件服务下载失败: " + ex.getMessage(), ex);
+        }
+    }
+
+    /**
+     * R-62: 列出对象元数据(供 core 的 {@code /api/core/files} 代理转发)。
+     *
+     * <p><b>为什么必须由 core 代理</b>:file-service 没有用户体系,它的
+     * {@code list} 只按"调用方自报的 patientId"过滤。若把该接口直接暴露到网关,
+     * 匿名调用者可以不带参数拿到<b>全部</b>对象及其 patientId,再带着这个 patientId
+     * 去下载 —— download 的归属校验所需的对应关系反而是 list 自己送出去的。
+     * 因此归属判定必须放在有身份上下文的 core 侧,file-service 退为纯内网存储层。
+     *
+     * @param bizType   业务类型(映射为对象前缀),可为 null
+     * @param patientId 患者 ID;仅为"已被 core 校权后的最终值",可为 null(员工全量查看)
+     */
+    public List<Map<String, Object>> list(String bizType, Long patientId) {
+        UriComponentsBuilder builder = UriComponentsBuilder.fromHttpUrl(baseUrl).path("/api/files");
+        if (bizType != null && !bizType.isBlank()) {
+            builder.queryParam("bizType", bizType);
+        }
+        if (patientId != null) {
+            builder.queryParam("patientId", patientId);
+        }
+        String url = builder.encode().toUriString();
+        try {
+            HttpHeaders headers = new HttpHeaders();
+            applyInternalToken(headers);
+            ResponseEntity<List<Map<String, Object>>> resp = restTemplate.exchange(
+                    url, HttpMethod.GET, new HttpEntity<>(headers),
+                    new ParameterizedTypeReference<>() {
+                    });
+            if (!resp.getStatusCode().is2xxSuccessful() || resp.getBody() == null) {
+                throw new IllegalStateException("文件服务列表查询失败: " + resp.getStatusCode());
+            }
+            return resp.getBody();
+        } catch (RestClientException ex) {
+            throw new IllegalStateException("文件服务列表查询失败: " + ex.getMessage(), ex);
+        }
+    }
+
+    /**
+     * R-62: 通用文件上传(供 {@code /api/core/files/upload} 代理转发)。
+     *
+     * <p>与 {@link #uploadPdf} 的区别:本方法不强制 {@code bizType=REPORT},
+     * 也没有"409 视为幂等成功"的宽容语义 —— 管理台上传同名对象时应把冲突如实报给用户。
+     *
+     * @return 文件服务返回的响应体(含 objectName / bucket 等)
+     */
+    public Map<String, Object> upload(MultipartFile file, String objectName, String bizType,
+                                      Long patientId, Long reportId, String originalName) {
+        String finalName = (originalName != null && !originalName.isBlank()) ? originalName : "upload.bin";
+        ByteArrayResource resource;
+        try {
+            resource = new ByteArrayResource(file.getBytes()) {
+                @Override
+                public String getFilename() {
+                    return finalName;
+                }
+            };
+        } catch (IOException ex) {
+            throw new IllegalStateException("读取上传文件失败: " + ex.getMessage(), ex);
+        }
+
+        LinkedMultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
+        body.add("file", resource);
+        if (objectName != null && !objectName.isBlank()) body.add("objectName", objectName);
+        if (bizType != null && !bizType.isBlank()) body.add("bizType", bizType);
+        if (patientId != null) body.add("patientId", patientId);
+        if (reportId != null) body.add("reportId", reportId);
+        body.add("originalName", finalName);
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+        applyInternalToken(headers);
+        try {
+            ResponseEntity<Map> resp = restTemplate.postForEntity(
+                    baseUrl + "/api/files/upload", new HttpEntity<>(body, headers), Map.class);
+            if (!resp.getStatusCode().is2xxSuccessful() || resp.getBody() == null) {
+                throw new IllegalStateException("文件服务上传失败: " + resp.getStatusCode());
+            }
+            return resp.getBody();
+        } catch (HttpClientErrorException ex) {
+            // R-30: 409 = 同名对象已存在(禁止覆盖,防报告投毒)。管理台需要看到真实冲突,不做幂等吞掉。
+            if (ex.getStatusCode() == HttpStatus.CONFLICT) {
+                throw new IllegalStateException("对象已存在,禁止覆盖: " + objectName, ex);
+            }
+            throw ex;
         }
     }
 

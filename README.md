@@ -35,7 +35,7 @@ browser ──► hospital-web :5173
 ```
 
 - **hospital-core**:模块化单体,内部 10 个 domain 模块(`platform` 共享内核 + `clinical` / `pharmacy` / `lab` / `report` / `booking` / `dispatch` / `patient` / `iam` / `org` / `fhir`),各自独立 schema。
-- **gateway**:路由 `/api/core/**`(转发 hospital-core 内全部业务域)、`/api/notify/**`(notification)、`/api/files/**`(file-service)、`/fhir/**`(FHIR R4)。
+- **gateway**:路由 `/api/core/**`(转发 hospital-core 内全部业务域,含文件代理 `/api/core/files/**`)、`/api/notify/**`(notification)、`/fhir/**`(FHIR R4)。**不暴露 file-service** —— 文件访问统一经 core 代理鉴权与归属校验,file-service 只在内网可达(R-62)。
 - **notification**:消费 `VisitCreatedEvent` / `OrderCreatedEvent` / `VisitStatusEvent`,写入 notification store,供前端轮询。
 - **file**:MinIO 封装,上传下载 + 分片。
 

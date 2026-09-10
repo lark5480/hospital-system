@@ -778,8 +778,23 @@ public class VisitService {
         }
         if (currentDeptId != null) wrapper.eq(Order::getExecutionDeptId, currentDeptId);
         List<Order> exams = orderMapper.selectList(wrapper);
+        if (exams.isEmpty()) {
+            return List.of();
+        }
+        // R-63: 原先在 map 内逐行 visitMapper.selectById(o.getVisitId()),是 O(N) 次往返。
+        // 与 R-19(名称解析 N+1)同类,只是位置不在 R-19 列的三个类里,之前被漏掉。
+        // 改为一次 selectBatchIds + 分组,查询次数从 1+N 降到 1+1。
+        List<Long> visitIds = exams.stream()
+                .map(Order::getVisitId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        Map<Long, Visit> visitMap = visitIds.isEmpty() ? Map.of()
+                : visitMapper.selectBatchIds(visitIds).stream()
+                        .filter(Objects::nonNull)
+                        .collect(Collectors.toMap(Visit::getId, Function.identity(), (a, b) -> a));
         return exams.stream().map(o -> {
-            Visit visit = visitMapper.selectById(o.getVisitId());
+            Visit visit = visitMap.get(o.getVisitId());
             String patientName = visit != null ? resolvePatientName(visit.getPatientId()) : null;
             String doctorName = visit != null ? resolveDoctorName(visit.getDoctorId()) : null;
             return new ExamTaskVO(o.getId(), o.getVisitId(), patientName, doctorName, o.getItemName(),

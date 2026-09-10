@@ -29,14 +29,15 @@ spring:
           uri: http://${NOTIFICATION_HOST:localhost}:8102
           predicates:
             - Path=/api/notify/**
-        - id: hospital-file
-          uri: http://${FILE_HOST:localhost}:8103
-          predicates:
-            - Path=/api/files/**
-          filters:
-            # R-03: 由网关代发内部调用令牌 —— 令牌只存在于服务端(网关 ↔ file-service),
-            # 浏览器侧永远不接触,避免"前端直连就必须把令牌下发到浏览器"的死结。
-            - AddRequestHeader=X-Internal-Token, ${file.internal-token}
+        # R-62: 原先此处有 id=hospital-file 的路由,直接把 /api/files/** 转发到 file-service(8103),
+        # 并由网关 AddRequestHeader 注入内部令牌。现已整体撤除,原因:
+        #  1) 网关默认 profile 即 permitAll(仓库中也不存在 application-iam.yml),
+        #     而 AddRequestHeader 对匿名请求同样生效 —— 内部令牌对"经网关的匿名调用者"不构成边界;
+        #  2) file-service 的 list 在不传 patientId 时返回全部对象及其 patientId,
+        #     而 download 的归属校验恰好依赖这组对应关系 → 形成"匿名列举 + 下载"的闭环。
+        # 现在文件访问一律经 core 的 /api/core/files(见 FileProxyController),
+        # file-service 只在内网可达;内部令牌也只在 core ↔ file-service 之间存在。
+        # 注意:不要为了"方便"再把这条路由加回来 —— 网关层没有身份上下文可用。
         - id: hospital-patient
           uri: http://${CORE_HOST:localhost}:8101
           predicates:
@@ -67,16 +68,8 @@ spring:
           predicates:
             - Path=/swagger-ui.html,/swagger-ui/**,/api-docs/**,/v3/api-docs/**
 
-# R-03: 调用 file-service 的内部调用令牌,须与 file-service 侧配置同一把。
-# 生产必须通过环境变量 FILE_INTERNAL_TOKEN 注入;留空时 file-service 在 prod profile 下会拒绝启动。
-#
-# 注意:默认值必须是一个非空串,不能写成 ${FILE_INTERNAL_TOKEN:}。
-# AddRequestHeader 绑定的是 NameValueConfig,其 value 不允许为空 —— 占位符解析成空串时
-# 网关会在启动阶段直接失败(Binding to target ... Property: .value Reason: 不能为空)。
-# 未注入环境变量时这里发一个占位串:file-service 侧自身未配置令牌时本就放行,不影响本地开发;
-# 若 file-service 配了令牌而网关没配,请求会被 401 —— 这正是配置不一致时希望暴露的行为。
-file:
-  internal-token: ${FILE_INTERNAL_TOKEN:dev-no-token}
+# R-62: 网关不再持有 file-service 的调用令牌 —— /api/files/** 路由已撤除,
+# 令牌只在 core(FILE_INTERNAL_TOKEN)与 file-service 之间存在。
 
 logging:
   # R-24: 由 debug 降为 info —— 网关是所有请求的入口,DEBUG 下每个请求都会打路由匹配日志,

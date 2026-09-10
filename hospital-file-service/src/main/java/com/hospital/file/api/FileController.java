@@ -47,6 +47,12 @@ import java.util.stream.Collectors;
  *
  * <p>R-30 加固:对象名白名单校验(拒绝路径穿越/控制字符)、同名对象禁止覆盖(防报告投毒)、
  * Content-Disposition 使用 Spring 标准 API 编码(杜绝响应头注入)。
+ *
+ * <p>R-62 边界说明:本服务<b>不是</b>公网入口 —— 网关已没有任何指向 8103 的路由,
+ * 所有文件访问一律经 core 的 {@code /api/core/files} 代理(那里才有身份上下文)。
+ * 本服务不做用户鉴权,它的 patientId 校验只是"防直连"的纵深防御,<b>不能</b>当作授权机制:
+ * {@code list} 不传 patientId 时即"全量列举",该语义只允许在"仅内网可达 + core 已完成鉴权"的前提下存在。
+ * 若将来有人把 file-service 直接暴露出去,请先在这里补上真正的身份鉴权。
  */
 @RestController
 @RequestMapping("/api/files")
@@ -162,7 +168,14 @@ public class FileController {
                 .body(new InputStreamResource(obj));
     }
 
-    /** 文件列表:支持按 bizType(映射到对象前缀)与 patientId 过滤。 */
+    /**
+     * 文件列表:按 bizType(映射到对象前缀)与 patientId 过滤。
+     *
+     * <p>R-62:<b>不传 patientId 表示全量列举</b>,该能力仅供 core 的文件管理台路径使用。
+     * 本服务不做鉴权(它没有用户体系),授权判定在 core 的 {@code FileProxyController};
+     * 之所以可以保留全量语义,是因为网关已没有任何指向 8103 的路由 —— 本服务只在内网可达。
+     * 若将来有人把 8103 暴露出去,必须先给本接口补上真正的鉴权。
+     */
     @GetMapping
     public ResponseEntity<List<FileMeta>> list(
             @RequestParam(value = "bizType", required = false) String bizType,
@@ -170,14 +183,19 @@ public class FileController {
         return ResponseEntity.ok(queryFiles(bizType, patientId));
     }
 
-    /** C 端"我的文件":仅返回指定患者的对象。 */
+    /** C 端"我的文件":仅返回指定患者的对象。patientId 必填(R-62:该端点没有"全量"语义)。 */
     @GetMapping("/mine")
     public ResponseEntity<List<FileMeta>> mine(
-            @RequestParam(value = "patientId", required = false) Long patientId) throws Exception {
+            @RequestParam(value = "patientId") Long patientId) throws Exception {
         return ResponseEntity.ok(queryFiles(null, patientId));
     }
 
     private List<FileMeta> queryFiles(String bizType, Long patientId) throws Exception {
+        // R-62: 注意 patientId == null 表示"全量列举",每条 FileMeta 都带 patientId ——
+        // 而这正是 download 归属校验所需要的"钥匙"。所以该语义只能在"本服务不外网可达 +
+        // 调用方(core)已完成鉴权"的前提下存在:网关已撤除 /api/files/** 路由,
+        // 全量列举仅由 core 的管理台路径(FileProxyController,限医护/管理员)触发。
+        // 绝不要在没有身份上下文的地方(如网关直连路由)暴露本方法的结果。
         String prefix = (bizType != null && !bizType.isBlank()) ? bizType.toLowerCase() + "/" : "";
         List<FileMeta> result = new ArrayList<>();
         Iterable<io.minio.Result<Item>> objects = minioClient.listObjects(ListObjectsArgs.builder()
@@ -189,6 +207,7 @@ public class FileController {
                     .bucket(bucket).object(item.objectName()).build());
             Map<String, String> um = stat.userMetadata() != null ? stat.userMetadata() : Map.of();
             Long metaPatient = um.get("patientid") != null ? Long.parseLong(um.get("patientid")) : null;
+            // R-62: 指定了 patientId 时按归属过滤;无归属元数据的对象一律不返回
             if (patientId != null && (metaPatient == null || !metaPatient.equals(patientId))) continue;
             result.add(new FileMeta(
                     item.objectName(),
