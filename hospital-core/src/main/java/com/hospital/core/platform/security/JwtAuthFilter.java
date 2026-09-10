@@ -41,8 +41,8 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             Claims claims = jwtTokenService.parse(token);
             if (claims != null) {
                 String username = jwtTokenService.usernameOf(claims);
-                // R-34: 该用户已改密 / 被重置密码 / 已登出 → 旧 token 立即失效,要求重新登录
-                if (tokenRevocationService.isRevoked(username)) {
+                // R-34: 该 token 签发于"改密 / 重置密码 / 登出"之前 → 失效,要求重新登录
+                if (tokenRevocationService.isRevoked(username, claims.getIssuedAt())) {
                     SecurityContextHolder.clearContext();
                     response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
                     response.setContentType(MediaType.APPLICATION_JSON_VALUE);

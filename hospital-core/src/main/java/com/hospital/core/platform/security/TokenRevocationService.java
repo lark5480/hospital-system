@@ -1,6 +1,7 @@
 package com.hospital.core.platform.security;
 
 import java.time.Duration;
+import java.util.Date;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -46,7 +47,14 @@ public class TokenRevocationService {
     private boolean failOpen;
 
     /**
-     * 吊销该用户当前全部已签发 token(改密 / 重置密码 / 登出时调用)。
+     * 吊销该用户在<b>此刻之前</b>签发的全部 token(改密 / 重置密码 / 登出时调用)。
+     *
+     * <p>记录的是一个"作废时间点"而非"永久黑名单":
+     * 只有 {@code iat <= 作废时间点} 的 token 才失效,之后重新签发的 token 仍然可用。
+     *
+     * <p><b>踩过的坑</b>:早期实现只写了一个存在性标记({@code set(key,"1")}),
+     * 导致管理员重置密码后该用户<b>新登录签发的 token 也被判失效</b> —— 等于重置一次密码
+     * 就把用户锁死 4 小时(token TTL)。必须按时间点比较,而不是按"是否存在"判断。
      *
      * @param username 登录名(手机号)
      */
@@ -55,9 +63,10 @@ public class TokenRevocationService {
             return;
         }
         try {
-            // TTL 与 token 有效期对齐;再兜底 60s,避免 ttl 配错导致标记过早消失
+            // TTL 与 token 有效期对齐:超过该时长后,即使有漏网的老 token 也已自然过期
             long ttl = Math.max(jwtTokenService.ttlMillis(), 60_000L);
-            stringRedisTemplate.opsForValue().set(key(username), "1", Duration.ofMillis(ttl));
+            stringRedisTemplate.opsForValue()
+                    .set(key(username), String.valueOf(System.currentTimeMillis()), Duration.ofMillis(ttl));
         } catch (RuntimeException e) {
             // 写入失败不阻断改密本身,但要留 ERROR 日志:该用户旧 token 在过期前仍可用
             log.error("[R-34] 写入令牌吊销记录失败,该用户旧 token 在过期前仍可使用: user={}", username, e);
@@ -65,16 +74,28 @@ public class TokenRevocationService {
     }
 
     /**
-     * 该用户是否已被吊销。由 {@code JwtAuthFilter} 每次请求调用一次。
+     * 该 token 是否已被吊销。由 {@code JwtAuthFilter} 每次请求调用一次。
      *
-     * @return true 表示该用户改过密码 / 已登出,当前 token 应视为失效
+     * @param username 登录名(手机号)
+     * @param issuedAt token 的签发时间({@code claims.getIssuedAt()});为 null 时按已吊销处理
+     * @return true 表示该 token 签发于"改密 / 重置 / 登出"之前,应视为失效
      */
-    public boolean isRevoked(String username) {
+    public boolean isRevoked(String username, Date issuedAt) {
         if (username == null || username.isBlank()) {
             return false;
         }
         try {
-            return Boolean.TRUE.equals(stringRedisTemplate.hasKey(key(username)));
+            String value = stringRedisTemplate.opsForValue().get(key(username));
+            if (value == null || value.isBlank()) {
+                return false;
+            }
+            long revokedAt = Long.parseLong(value.trim());
+            // 签发时间早于(或等于)作废时间点 → 旧 token,拒绝
+            return issuedAt == null || issuedAt.getTime() <= revokedAt;
+        } catch (NumberFormatException e) {
+            // 值异常(如人工写入)时按"已吊销"处理更安全,但要留日志便于排查
+            log.error("[R-34] 令牌吊销记录的值非法,按已吊销处理: user={}, value 解析失败", username, e);
+            return true;
         } catch (RuntimeException e) {
             log.error("[R-34] 读取令牌吊销记录失败,Redis 已位于认证关键路径上(failOpen={})", failOpen, e);
             // failOpen=true → 当作未吊销放行;false(默认) → 当作已吊销拒绝
