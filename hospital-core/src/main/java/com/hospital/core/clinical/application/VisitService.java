@@ -63,6 +63,11 @@ public class VisitService {
     @Autowired(required = false)
     private NameCache nameCache;
 
+    /** R-52: listPage 分页默认页大小,与 VisitController 的 defaultValue 对齐。 */
+    private static final int DEFAULT_PAGE_SIZE = 10;
+    /** R-52: listPage 单页大小上限,防止超大 pageSize 退化为全量拉取。 */
+    private static final int MAX_PAGE_SIZE = 500;
+
     /** 简单建就诊(无医嘱);保留以向后端直接调用。 */
     @Transactional
     public Visit create(Visit visit) {
@@ -485,6 +490,14 @@ public class VisitService {
      * 分页查询就诊列表（走读模型，O(1) 复杂度）
      */
     public PageResult<VisitDetail> listPage(String keyword, int pageNum, int pageSize, Long currentDeptId) {
+        // R-52: 防御式分页校验。原实现 offset = (pageNum - 1) * pageSize 对 pageNum <= 0 会算出负 OFFSET
+        // (PostgreSQL 直接报错);pageSize <= 0 会生成 "LIMIT 0"(返回空页)甚至非法 SQL;
+        // pageSize 超大(如 Integer.MAX_VALUE)会退化为全量拉取。
+        // 这里把入参归一化到合法区间:pageNum 至少 1,pageSize 落在 [1, 500]。
+        // 对合法入参取值不变(语义保持不变);归一化后的值同时回填到 PageResult,保证分页元数据自洽。
+        int effectivePageNum = Math.max(pageNum, 1);
+        int effectivePageSize = pageSize <= 0 ? DEFAULT_PAGE_SIZE : Math.min(pageSize, MAX_PAGE_SIZE);
+
         // 构建查询条件
         LambdaQueryWrapper<VisitReadModel> wrapper = new LambdaQueryWrapper<>();
 
@@ -515,9 +528,9 @@ public class VisitService {
         // 排序（在 COUNT 之后追加，避免污染 count SQL）
         wrapper.orderByDesc(VisitReadModel::getVisitTime);
 
-        // 分页查询
-        int offset = (pageNum - 1) * pageSize;
-        wrapper.last("LIMIT " + pageSize + " OFFSET " + offset);
+        // 分页查询(R-52: 用归一化后的 pageNum/pageSize,杜绝负 OFFSET / LIMIT 0)
+        int offset = (effectivePageNum - 1) * effectivePageSize;
+        wrapper.last("LIMIT " + effectivePageSize + " OFFSET " + offset);
         List<VisitReadModel> readModels = readModelMapper.selectList(wrapper);
 
         // R-17: 原实现对每条读模型各查 3 次(visit / orders / charges),pageSize=10 即 1+30 次 SQL。
@@ -528,8 +541,8 @@ public class VisitService {
         return PageResult.<VisitDetail>builder()
                 .items(items)
                 .total(total.intValue())
-                .pageNum(pageNum)
-                .pageSize(pageSize)
+                .pageNum(effectivePageNum)
+                .pageSize(effectivePageSize)
                 .build();
     }
 

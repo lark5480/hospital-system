@@ -47,6 +47,15 @@
 | R-43 | `listPage` 的 `inSql` 字符串拼接改为 `apply(..., {0})` 参数绑定（保留单条 SQL 与 O(1) 分页语义）；`orders.execution_dept_id` 索引已在 R-04 补齐 | `VisitService` |
 | R-44 | 审计写入移出业务线程：新增 `auditLogExecutor`（core 1/max 2/queue 1000/守护线程/`CallerRunsPolicy`）；提交失败或执行器不可用时**降级为同步写入**，审计绝不静默丢失；R-31 的 `try/finally` 语义保持 | `AsyncConfig`、`AuditLogAspect` |
 | R-45 | BCrypt 强度 10 → 12（前置的登录失败锁定与 IP 限流已落地）。说明：校验代价由哈希内记录的 cost 决定，既有账号登录速度不变，仅新建/改密的编码变慢 | `SecurityConfig` |
+| R-15 | 启动期全量重建：新增 `platform.meta` 水位表；`initAll()` 加版本守卫 + 主键游标分批（每批 1000）；`migrateUsers()` 先 `count(user_id IS NULL)` 短路，为 0 则整段跳过；`run()` 逐步打印耗时 | 新增 `platform.meta` 表、`DataInitializer`、`VisitReadModelService` |
+| R-25 | 重复预约幂等：`book()` 占号前校验同患者同号源已有 BOOKED 预约 → 409。**不加数据库唯一索引**（`sql.init.mode=always` 会让存量重复行直接导致启动失败），并发双写的彻底解决留 P3 | `BookingService` |
+| R-46 | 防超卖并发用例：`BookingConcurrencyTest` 用真实 PG + 8 线程 + `CountDownLatch` 同放，断言成功数==1、`slot.booked==1`、BOOKED 预约==1；**刻意不加 `@Transactional`**（线程共享事务就测不出并发），`@AfterEach` 清理自造数据 | 新增 `BookingConcurrencyTest` |
+| R-48 | ArchUnit 守护状态机旁路：新增规则「`*Service`（除 `VisitService`）不得调用 `Visit.setStatus`」，白名单为 `VisitService` 的建单初始化（`CREATED`，此时无前序状态）；另加 `visitStateMachineGuardIsArmed` 防止规则对空集合假通过。**已注明局限**：ArchUnit 是类粒度，`VisitService` 内部新增的旁路拦不住 | `ArchitectureTest` |
+| R-51 | `JsonbTypeHandler` 测试：9 个用例覆盖合法 JSON / null / 空串 / `"null"` / `{}` / `[]` / 非法 JSON；把「非法 JSON 原样返回字符串」固化为显式契约并标注为静默降级风险 | 新增 `JsonbTypeHandlerTest` |
+| R-52 | 分页边界：核实 `pageNum=0` 会算出**负 OFFSET**（PG 直接报错）、`pageSize<=0` → `LIMIT 0`、超大值 → 全量拉取；已加防御式校验（pageNum≥1、pageSize 1~500）并补 5 个边界用例 | `VisitService`、新增 `VisitServiceListPageTest` |
+| R-53 | 补 `finishVisit(force)` 退款与 `pay` 事件断言。**实测发现与用例预期不符**：存在 UNPAID 费用时 `finishVisit` 在 force 分支之前就抛 `IllegalStateException("存在未缴费用…")`，既不删除也未缴费、不作废医嘱；已按实际行为断言并注释说明（未改主源码） | `VisitServiceTest` |
+| R-54 | `MenuServiceTest` 污染 `SecurityContextHolder`：补 `@BeforeEach/@AfterEach` 清理。**实测纠正**：注解声称「匿名返回完整菜单」并不成立（匿名时 authority 为空，仍会按 `menu_authority` 裁剪），已改为固化真实语义的用例 | `MenuServiceTest` |
+| R-58 | 启动期破坏性 DELETE：`ensureStaffPhoneUnique()` 改为「先探测冲突 → `log.error` 打印冲突 phone 清单并跳过建约束」，**不再静默删除员工档案**（选择"跳过"而非"中止启动"：该 UNIQUE 是额外加固而非硬依赖，不应把局部数据问题放大成全站不可用） | `DataInitializer` |
 | 决策 4B | **由网关注入 `X-Internal-Token`**（`AddRequestHeader`）——令牌只存在于服务端，浏览器永不接触，前端零改动；file-service 在 prod 未配置令牌即拒绝启动（与 R-01 对称） | gateway `application.yml`、`InternalTokenFilter`、file-service `SecurityConfig` |
 | 决策 5 | **改密/重置即吊销该用户全部 token**（新增 `TokenRevocationService`，Redis 用户维度，TTL 与 token 对齐）；JWT TTL 8h→4h；`issue()` 加 jti 为单设备登出预留 | `TokenRevocationService`(新)、`JwtAuthFilter`、`JwtTokenService`、`PasswordController`、`ChangePasswordView.vue` |
 
@@ -174,9 +183,9 @@ List<Charge> unpaid = chargeMapper.selectList(null).stream()      // 无 WHERE
 
 ## 三、High 问题（22 条）
 
-> **已修复**：R-07、R-08、R-09、R-10、R-12、R-13、R-14、R-16、R-17、R-18、R-19、R-20、R-22、R-23、R-24、R-26、R-27、R-28、R-37、R-38、R-41、R-42、R-43、R-45
-> **部分修复**：R-11（notification 仍 permitAll）
-> **未启动**：R-15（启动重建守卫）、R-21（建单批量写，已留 TODO P2）、R-25（重复预约幂等校验）
+> **已修复**：R-07、R-08、R-09、R-10、R-12、R-13、R-14、R-16、R-17、R-18、R-19、R-20、R-22、R-23、R-24、R-26、R-27、R-28、R-37、R-38、R-41、R-42、R-43、R-45、R-46、R-48、R-51、R-52、R-53、R-54
+> **部分修复**：R-11（notification 仍 permitAll）、R-47（缺号源生成/清理/状态机的用例，仅补了并发与幂等）
+> **未启动**：R-21（建单批量写，已留 TODO P2）、R-49（集成测试仍依赖全局种子数据）、R-50（`DataInitializer` 无直接单测）
 
 | 编号 | 标题 | 维度 | 位置 | 备注 |
 |---|---|---|---|---|
@@ -244,8 +253,8 @@ List<Charge> unpaid = chargeMapper.selectList(null).stream()      // 无 WHERE
 
 ## 五、Low 问题（7 条）
 
-> **已修复**：R-57（空密码免密分支已删除）
-> **未启动**：R-56、R-58、R-59、R-60、R-61
+> **已修复**：R-57（空密码免密分支已删除）、R-58（启动期破坏性 DELETE 改为探测+告警，不再静默删数据）
+> **未启动**：R-56（前端 localStorage）、R-59（`VisitStatus` 参数化矩阵）、R-60（PDF 字体路径 Windows-only）、R-61（前端零测试）
 
 | 编号 | 标题 | 维度 | 位置 |
 |---|---|---|---|

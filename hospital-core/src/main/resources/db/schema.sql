@@ -11,6 +11,16 @@ CREATE TABLE IF NOT EXISTS platform.audit_log (
     created_at  TIMESTAMP NOT NULL DEFAULT now() -- 创建时间
 );
 
+-- R-15: 平台元数据/水位表。
+-- 背景:启动期的统一账号迁移(migrateUsers)与读模型全量重建(VisitReadModelService.initAll)
+-- 原本每次启动都无条件全表扫描,10 万规模下启动近 18 分钟。引入本表记录"已完成到哪个版本",
+-- 日常启动命中断路即直接跳过,只有水位缺失/版本升级时才执行重活。
+CREATE TABLE IF NOT EXISTS platform.meta (
+    key         VARCHAR(100) PRIMARY KEY,   -- 水位键:read_model_init_version / user_migration_version 等
+    value       VARCHAR(500),               -- 水位值(如版本号)
+    updated_at  TIMESTAMP NOT NULL DEFAULT now() -- 更新时间
+);
+
 -- 门诊挂号/分诊排队
 CREATE TABLE IF NOT EXISTS clinical.registration (
     id          BIGSERIAL PRIMARY KEY,
@@ -169,6 +179,10 @@ CREATE TABLE IF NOT EXISTS dispatch.queue_board (
 
 -- ===================== 表注释 =====================
 COMMENT ON TABLE platform.audit_log     IS '审计日志';
+COMMENT ON TABLE platform.meta          IS '平台元数据/水位(R-15:记录启动期一次性重活的水位,避免每次启动全量重建)';
+COMMENT ON COLUMN platform.meta.key       IS '水位键:read_model_init_version/user_migration_version';
+COMMENT ON COLUMN platform.meta.value     IS '水位值';
+COMMENT ON COLUMN platform.meta.updated_at IS '更新时间';
 COMMENT ON TABLE clinical.visit        IS '门诊就诊';
 COMMENT ON TABLE clinical.orders       IS '医嘱(药品/检查/检验)';
 COMMENT ON TABLE clinical.charge       IS '收费记录';

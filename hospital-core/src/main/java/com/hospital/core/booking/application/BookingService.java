@@ -215,6 +215,22 @@ public class BookingService {
         if (slot.getExamDate().isBefore(LocalDate.now())) {
             throw new IllegalStateException("号源已过期,请选择今天及以后的时段");
         }
+
+        // R-25: 重复预约幂等校验(占号之前)。同一患者 + 同一号源若已存在 BOOKED 预约,
+        // 直接拒绝,避免前端双击 / 网络重试导致重复落单并多扣号源。
+        // 抛 IllegalStateException,由 GlobalExceptionHandler 映射为 409。
+        // 说明:这是应用层校验,并发双写下仍有竞态窗口(两个请求可同时通过校验)。
+        // 彻底解决需要数据库侧"部分唯一索引"(booking.appointment(patient_id, slot_id) WHERE status='BOOKED')
+        // + 存量重复数据清洗;但 spring.sql.init.mode=always 每次启动都跑 schema.sql,
+        // 若存量已有重复行,CREATE UNIQUE INDEX 会直接让应用启动失败,故本期不做,列为 P3。
+        Long duplicate = appointmentMapper.selectCount(new QueryWrapper<Appointment>()
+                .eq("patient_id", patientId)
+                .eq("slot_id", slotId)
+                .eq("status", "BOOKED"));
+        if (duplicate != null && duplicate > 0) {
+            throw new IllegalStateException("您已预约该时段,请勿重复提交");
+        }
+
         int updated = slotMapper.incrementBooked(slotId);
         if (updated == 0) {
             throw new IllegalStateException("号源已满");

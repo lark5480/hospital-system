@@ -15,6 +15,7 @@ import com.hospital.core.platform.support.NameCache;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -27,6 +28,18 @@ import java.util.function.Function;
 @Service
 @RequiredArgsConstructor
 public class VisitReadModelService {
+
+    /** R-15: 读模型全量重建的水位键。 */
+    public static final String READ_MODEL_INIT_VERSION_KEY = "read_model_init_version";
+
+    /**
+     * R-15: 读模型全量重建的"当前版本"。只要 platform.meta 里 record 的水位与它一致,
+     * 启动期就跳过全量重建;当重建逻辑发生不兼容变更(如字段口径调整)时,把它 +1 即可强制重建一次。
+     */
+    public static final String READ_MODEL_INIT_VERSION = "1";
+
+    /** R-15: 重建时的分批大小,避免一次性把全表 visit 载入内存。 */
+    private static final int REBUILD_BATCH_SIZE = 1000;
 
     private final VisitReadModelMapper readModelMapper;
     private final VisitMapper visitMapper;
@@ -44,6 +57,11 @@ public class VisitReadModelService {
     // 通过 NameCache 解析患者/医生/科室姓名,命中则零查询。
     @Autowired(required = false)
     private NameCache nameCache;
+
+    // R-15: 水位读写走 JdbcTemplate。同样用字段注入,不改 7 参构造签名,保持既有单测直接 new 的兼容性;
+    // 无 Spring 上下文(纯单测 jdbcTemplate 为 null)时退化为"每次都重建",行为与改造前一致。
+    @Autowired(required = false)
+    private JdbcTemplate jdbcTemplate;
 
     /**
      * 刷新读模型（写操作后调用）。
@@ -141,19 +159,75 @@ public class VisitReadModelService {
     }
 
     /**
-     * 初始化所有读模型（启动时调用）
+     * 初始化所有读模型(启动时调用)。
+     *
+     * <p>R-15: 加"水位守卫 + 分批增量",替代原本每次启动对全表 visit 逐条 refresh 的做法
+     * (单条约 8 次 SQL,10 万 visit 约 80 万次 SQL,估算启动近 18 分钟):
+     * <ol>
+     *   <li>先读 {@code platform.meta(read_model_init_version)};命中当前版本常量则直接跳过,日常启动零重活;</li>
+     *   <li>水位缺失/版本不一致时才重建,且按主键游标分批(每批 {@value #REBUILD_BATCH_SIZE} 条),
+     *       避免一次性把全表 visit 载入内存;</li>
+     *   <li>重建完成后写回水位,后续启动即短路。</li>
+     * </ol>
+     * 无 Spring 上下文(jdbcTemplate 为 null)时不读水位,退化为"每次都重建",保持既有单测语义。
      */
     @Transactional
     public void initAll() {
-        List<Visit> visits = visitMapper.selectList(null);
-        for (Visit visit : visits) {
-            try {
-                refresh(visit.getId());
-            } catch (Exception e) {
-                log.error("Failed to init read model for visit {}", visit.getId(), e);
+        // R-15: 水位守卫 —— 命中当前版本常量则跳过全量重建
+        if (jdbcTemplate != null) {
+            String version = readMeta(READ_MODEL_INIT_VERSION_KEY);
+            if (READ_MODEL_INIT_VERSION.equals(version)) {
+                log.info("[VisitReadModel] 读模型水位={} 已是最新版本,跳过全量重建", version);
+                return;
             }
         }
-        log.info("Initialized {} visit read models", visits.size());
+
+        long start = System.currentTimeMillis();
+        int total = 0;
+        long lastId = 0L;
+        // R-15: 主键游标分批读取(gt(id) + order by id + limit),避免 OFFSET 与全表内存加载。
+        while (true) {
+            List<Visit> batch = visitMapper.selectList(new LambdaQueryWrapper<Visit>()
+                    .gt(Visit::getId, lastId)
+                    .orderByAsc(Visit::getId)
+                    .last("LIMIT " + REBUILD_BATCH_SIZE));
+            if (batch.isEmpty()) {
+                break;
+            }
+            for (Visit visit : batch) {
+                try {
+                    refresh(visit.getId());
+                } catch (Exception e) {
+                    log.error("Failed to init read model for visit {}", visit.getId(), e);
+                }
+                lastId = visit.getId();
+            }
+            total += batch.size();
+            if (batch.size() < REBUILD_BATCH_SIZE) {
+                break;
+            }
+        }
+
+        // R-15: 重建完成写回水位,下次启动即可短路
+        if (jdbcTemplate != null) {
+            writeMeta(READ_MODEL_INIT_VERSION_KEY, READ_MODEL_INIT_VERSION);
+        }
+        log.info("Initialized {} visit read models, 耗时 {}ms", total, System.currentTimeMillis() - start);
+    }
+
+    /** R-15: 读取水位(不存在返回 null)。 */
+    private String readMeta(String key) {
+        List<String> values = jdbcTemplate.queryForList(
+                "SELECT value FROM platform.meta WHERE key = ?", String.class, key);
+        return values.isEmpty() ? null : values.get(0);
+    }
+
+    /** R-15: 写入/更新水位(upsert)。 */
+    private void writeMeta(String key, String value) {
+        jdbcTemplate.update(
+                "INSERT INTO platform.meta(key, value, updated_at) VALUES (?, ?, now()) "
+                        + "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
+                key, value);
     }
 
     /**
