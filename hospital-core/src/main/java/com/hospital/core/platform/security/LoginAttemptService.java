@@ -70,7 +70,14 @@ public class LoginAttemptService {
         private long windowStart;
     }
 
-    /** 手机号是否处于锁定中。 */
+    /**
+     * 手机号是否处于锁定中。
+     *
+     * <p><b>注意(踩过的坑)</b>:本方法<b>只</b>在"锁定已过期"时清理记录,
+     * 绝不能因为"记录存在但未锁定"就顺手删除 —— 调用方(AuthController)会在
+     * 登录失败后再查一次本方法以判断是否刚触发锁定,若此处把未达阈值的计数抹掉,
+     * 每次失败都会被清零,连续失败永远攒不到上限,锁定功能将完全失效。
+     */
     public boolean isLocked(String phone) {
         if (phone == null || phone.isBlank()) return false;
         PhoneAttempt attempt = phoneAttempts.get(phone);
@@ -79,8 +86,8 @@ public class LoginAttemptService {
         if (attempt.lockedUntil > now) {
             return true;
         }
-        // 锁定期已过 → 清除计数,重新开始计数
-        if (attempt.lockedUntil > 0 || attempt.failures > 0) {
+        // 仅当"锁定期已过"才清除,重新开始计数;未达阈值的失败计数必须保留
+        if (attempt.lockedUntil > 0) {
             phoneAttempts.remove(phone, attempt);
         }
         return false;
