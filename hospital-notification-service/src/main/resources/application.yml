@@ -11,5 +11,7 @@ spring:
     password: ${RABBIT_PASSWORD:admin123}
 
 logging:
+  # R-24: 由 debug 降为 info —— SSE 连接的心跳与广播日志在 DEBUG 下会高频刷盘,
+  # 且日志内容含患者姓名等 PHI。排障时用 --logging.level.com.hospital=debug 临时打开。
   level:
-    com.hospital: debug
+    com.hospital: info

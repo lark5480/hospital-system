@@ -13,6 +13,19 @@ spring:
     username: ${PG_USER:postgres}
     password: ${PG_PASSWORD:root123}
     driver-class-name: org.postgresql.Driver
+    # R-23: 原先完全没配连接池(Hikari 默认 maximum-pool-size=10)。
+    # 在 N+1 未根治前,单次 listPage 串行占用连接可达 30+ 次、持连接数秒,
+    # 10 个并发即把池打满,报 "Connection is not available"。
+    # 注意:加大连接池只是缓解,真正要修的是 PERF-02/05/06 的全表扫描与 N+1;
+    # 池大小必须 ≤ PostgreSQL 的 max_connections(默认 100),多实例部署时按实例数分摊。
+    hikari:
+      maximum-pool-size: 30
+      minimum-idle: 10
+      connection-timeout: 10000
+      idle-timeout: 600000
+      max-lifetime: 1500000
+      validation-timeout: 3000
+      leak-detection-threshold: 10000
   rabbitmq:
     host: ${RABBIT_HOST:localhost}
     port: ${RABBIT_PORT:5672}
@@ -40,7 +53,11 @@ logging:
   charset:
     console: ${CONSOLE_LOG_CHARSET:UTF-8}
   level:
-    com.hospital: debug
+    # R-24: 原先 com.hospital 全量 DEBUG —— 热路径 log.debug 的字符串拼接无条件执行,
+    # Console Appender 的 System.out 是 synchronized,多线程下直接串行化,
+    # 写接口 CPU/RT 增加 20~40%;同时把患者 ID 等 PHI 落进日志(见 R-32)。
+    # 排障时临时打开:--logging.level.com.hospital=debug
+    com.hospital: info
 
 # JWT 配置(R-01):
 # 生产环境必须注入环境变量 APP_JWT_SECRET(≥32 字节的随机串,例如 openssl rand -base64 48 的输出),

@@ -3,10 +3,14 @@ package com.hospital.core.clinical.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.List;
 
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -16,6 +20,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.context.ApplicationEventPublisher;
 
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.hospital.core.clinical.domain.Charge;
 import com.hospital.core.clinical.domain.Order;
 import com.hospital.core.clinical.domain.Visit;
@@ -41,6 +46,13 @@ class VisitServiceTest {
     @Mock VisitReadModelMapper readModelMapper;
 
     VisitService service;
+
+    @BeforeAll
+    static void initMybatisPlus() {
+        // R-05: 批量 UPDATE 用了 LambdaUpdateWrapper,set() 会即时解析列名,
+        // 纯单测没有 Spring 上下文,需手动初始化 lambda 缓存(生产由 mapper 注册时自动初始化)
+        MybatisPlusTestSupport.initLambdaCache(Charge.class, Order.class);
+    }
 
     @BeforeEach
     void setUp() {
@@ -102,7 +114,8 @@ class VisitServiceTest {
         @DisplayName("存在未缴(UNPAID)费用 → 拒绝结束")
         void hasUnpaid() {
             when(visitMapper.selectById(1L)).thenReturn(visit(1L, "IN_PROGRESS"));
-            when(chargeMapper.selectList(null)).thenReturn(List.of(charge(9L, 1L, 5L, "UNPAID")));
+            // R-05: finishVisit 的未缴判断已由 selectList(null) 全表扫描改为 selectCount 下推,桩同步调整
+            when(chargeMapper.selectCount(any())).thenReturn(1L);
 
             assertThatThrownBy(() -> service.finishVisit(1L, false))
                     .isInstanceOf(IllegalStateException.class)
@@ -113,13 +126,15 @@ class VisitServiceTest {
         @DisplayName("存在未执行(CREATED)医嘱且 force=false → 保留医嘱并正常结束")
         void hasPendingOrders() {
             when(visitMapper.selectById(1L)).thenReturn(visit(1L, "IN_PROGRESS"));
-            when(chargeMapper.selectList(null)).thenReturn(List.of());
+            when(chargeMapper.selectCount(any())).thenReturn(0L);
             Order pending = order(5L, 1L, "CREATED");
             when(orderMapper.selectList(any())).thenReturn(List.of(pending));
 
             VisitDetail result = service.finishVisit(1L, false);
 
             assertThat(result.getVisit().getStatus()).isEqualTo("FINISHED");
+            // R-05: 批量作废改为单条 UPDATE,force=false 时不应对医嘱发起任何 UPDATE
+            verify(orderMapper, never()).update(any(), any());
             assertThat(pending.getStatus()).isEqualTo("CREATED");
         }
 
@@ -127,12 +142,15 @@ class VisitServiceTest {
         @DisplayName("存在未执行医嘱但 force=true → 作废医嘱后正常结束")
         void forceCancelPendingOrders() {
             when(visitMapper.selectById(1L)).thenReturn(visit(1L, "IN_PROGRESS"));
-            when(chargeMapper.selectList(null)).thenReturn(List.of());
+            when(chargeMapper.selectCount(any())).thenReturn(0L);
             when(orderMapper.selectList(any())).thenReturn(List.of(order(5L, 1L, "CREATED")));
 
             VisitDetail result = service.finishVisit(1L, true);
 
             assertThat(result.getVisit().getStatus()).isEqualTo("FINISHED");
+            // R-05: 医嘱与收费作废均为单条批量 UPDATE(不再逐条 updateById)
+            verify(orderMapper).update(isNull(), any(LambdaUpdateWrapper.class));
+            verify(chargeMapper).update(isNull(), any(LambdaUpdateWrapper.class));
         }
     }
 

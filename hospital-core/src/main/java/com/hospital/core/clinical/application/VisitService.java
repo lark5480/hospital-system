@@ -1,11 +1,14 @@
 package com.hospital.core.clinical.application;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import org.springframework.context.ApplicationEventPublisher;
@@ -16,6 +19,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.hospital.core.clinical.domain.Charge;
 import com.hospital.core.clinical.domain.Order;
 import com.hospital.core.clinical.domain.OrderCreatedEvent;
@@ -76,11 +80,15 @@ public class VisitService {
         visit.setCreatedAt(LocalDateTime.now());
         visitMapper.insert(visit);
 
+        // R-05: 医嘱/收费仍是逐条 insert(N 条医嘱 = N 次 insert + N 次 charge insert)。
+        // TODO(R-05 待办): 后续可改为 MyBatis-Plus 批量插入或 XML foreach 批量落库,
+        // 本期为控制改造风险(保持 public 签名与事件时序不变)暂保持逐条,但金额统一走 calcAmount 校验。
         BigDecimal total = BigDecimal.ZERO;
         for (Order order : orders) {
             order.setVisitId(visit.getId());
             order.setStatus("CREATED");
-            order.setAmount(order.getUnitPrice().multiply(BigDecimal.valueOf(order.getQuantity())));
+            // R-06: 统一金额计算(校验 + 两位小数),避免 NPE / 负额结算 / scale 漂移
+            order.setAmount(calcAmount(order.getUnitPrice(), order.getQuantity()));
             orderMapper.insert(order);
 
             Charge charge = new Charge();
@@ -103,7 +111,8 @@ public class VisitService {
                 .orders(orders)
                 .charges(chargeMapper.selectList(
                         new LambdaQueryWrapper<Charge>().eq(Charge::getVisitId, visit.getId())))
-                .totalAmount(total)
+                // R-06: 合计金额统一两位小数,避免多次累加后 scale 漂移
+                .totalAmount(total.setScale(2, RoundingMode.HALF_UP))
                 .build();
     }
 
@@ -136,7 +145,8 @@ public class VisitService {
         }
         order.setVisitId(visitId);
         order.setStatus("CREATED");
-        order.setAmount(order.getUnitPrice().multiply(BigDecimal.valueOf(order.getQuantity())));
+        // R-06: 统一金额计算(校验 + 两位小数),避免 NPE / 负额结算 / scale 漂移
+        order.setAmount(calcAmount(order.getUnitPrice(), order.getQuantity()));
         orderMapper.insert(order);
 
         Charge charge = new Charge();
@@ -193,7 +203,8 @@ public class VisitService {
         if (!"CREATED".equals(existing.getStatus())) {
             throw new IllegalStateException("只能修改未执行的医嘱(当前状态: " + existing.getStatus() + ")");
         }
-        BigDecimal newAmount = updates.getUnitPrice().multiply(BigDecimal.valueOf(updates.getQuantity()));
+        // R-06: 统一金额计算(校验 + 两位小数),避免 NPE / 负额结算 / scale 漂移
+        BigDecimal newAmount = calcAmount(updates.getUnitPrice(), updates.getQuantity());
         existing.setType(updates.getType());
         existing.setItemName(updates.getItemName());
         existing.setQuantity(updates.getQuantity());
@@ -202,14 +213,15 @@ public class VisitService {
         orderMapper.updateById(existing);
 
         // 同步更新对应 charge 项(只改未收费的)
-        chargeMapper.selectList(null).stream()
-                .filter(c -> orderId.equals(c.getOrderId()) && visitId.equals(c.getVisitId()))
+        // R-05: 把 orderId + visitId + payStatus 条件下推到 SQL,不再拉全表后在 Java 里过滤
+        chargeMapper.selectList(new LambdaQueryWrapper<Charge>()
+                        .eq(Charge::getOrderId, orderId)
+                        .eq(Charge::getVisitId, visitId)
+                        .eq(Charge::getPayStatus, "UNPAID"))
                 .forEach(c -> {
-                    if ("UNPAID".equals(c.getPayStatus())) {
-                        c.setItemName(updates.getItemName());
-                        c.setAmount(newAmount);
-                        chargeMapper.updateById(c);
-                    }
+                    c.setItemName(updates.getItemName());
+                    c.setAmount(newAmount);
+                    chargeMapper.updateById(c);
                 });
 
         // 通知下游模块同步各自快照明细(处方/检验申请),避免修改后仍显示旧名称
@@ -237,10 +249,11 @@ public class VisitService {
         orderMapper.updateById(existing);
 
         // 删除对应未收费记录(已收费的不动)
-        chargeMapper.selectList(null).stream()
-                .filter(c -> orderId.equals(c.getOrderId()) && visitId.equals(c.getVisitId()))
-                .filter(c -> "UNPAID".equals(c.getPayStatus()))
-                .forEach(c -> chargeMapper.deleteById(c.getId()));
+        // R-05: visitId + orderId + payStatus 全部下推到 SQL,不再拉全表后在 Java 里过滤
+        chargeMapper.delete(new LambdaQueryWrapper<Charge>()
+                .eq(Charge::getVisitId, visitId)
+                .eq(Charge::getOrderId, orderId)
+                .eq(Charge::getPayStatus, "UNPAID"));
 
         readModelService.refresh(visitId);
         return getDetail(visitId);
@@ -264,17 +277,19 @@ public class VisitService {
         orderMapper.updateById(existing);
 
         // 未收费 → 直接删除;已收费 → 置 REFUNDED + 记录退费时间(不物理删除,保审计)
-        chargeMapper.selectList(null).stream()
-                .filter(c -> orderId.equals(c.getOrderId()) && visitId.equals(c.getVisitId()))
-                .forEach(c -> {
-                    if ("UNPAID".equals(c.getPayStatus())) {
-                        chargeMapper.deleteById(c.getId());
-                    } else if ("PAID".equals(c.getPayStatus())) {
-                        c.setPayStatus("REFUNDED");
-                        c.setRefundTime(LocalDateTime.now());
-                        chargeMapper.updateById(c);
-                    }
-                });
+        // R-05: visitId + orderId 条件下推到 SQL,不再拉全表后在 Java 里过滤
+        List<Charge> related = chargeMapper.selectList(new LambdaQueryWrapper<Charge>()
+                .eq(Charge::getVisitId, visitId)
+                .eq(Charge::getOrderId, orderId));
+        for (Charge c : related) {
+            if ("UNPAID".equals(c.getPayStatus())) {
+                chargeMapper.deleteById(c.getId());
+            } else if ("PAID".equals(c.getPayStatus())) {
+                c.setPayStatus("REFUNDED");
+                c.setRefundTime(LocalDateTime.now());
+                chargeMapper.updateById(c);
+            }
+        }
 
         readModelService.refresh(visitId);
         return getDetail(visitId);
@@ -291,14 +306,13 @@ public class VisitService {
         if (VisitStatus.of(visit.getStatus()) == VisitStatus.CREATED) {
             throw new IllegalStateException("就诊单尚未确单,不可结算,请先由医生确单");
         }
-        List<Charge> unpaid = chargeMapper.selectList(null).stream()
-                .filter(c -> visitId.equals(c.getVisitId()) && "UNPAID".equals(c.getPayStatus()))
-                .toList();
-        for (Charge c : unpaid) {
-            c.setPayStatus("PAID");
-            c.setPayTime(LocalDateTime.now());
-            chargeMapper.updateById(c);
-        }
+        // R-05: 原实现先 selectList(null) 拉全表再逐条 updateById(N 次 SQL),
+        // 现改为单条批量 UPDATE(条件下推),无论多少条收费都只发 1 次 SQL 且不物化行。
+        chargeMapper.update(null, new LambdaUpdateWrapper<Charge>()
+                .eq(Charge::getVisitId, visitId)
+                .eq(Charge::getPayStatus, "UNPAID")
+                .set(Charge::getPayStatus, "PAID")
+                .set(Charge::getPayTime, LocalDateTime.now()));
         // 收费完成后,已确单就诊单自动推进为进行中(进入就诊执行阶段)
         if (VisitStatus.of(visit.getStatus()) == VisitStatus.CONFIRMED) {
             visit.transitTo(VisitStatus.IN_PROGRESS);
@@ -306,11 +320,13 @@ public class VisitService {
         }
         readModelService.refresh(visitId);
         // 发布缴费完成通知:仅当有药品医嘱时通知药房
-        boolean hasMedication = orderMapper.selectList(
-                new LambdaQueryWrapper<Order>()
-                        .eq(Order::getVisitId, visitId)
-                        .eq(Order::getType, "MEDICATION"))
-                .stream().anyMatch(o -> "CREATED".equals(o.getStatus()));
+        // R-05: 这里只判"是否存在",改用 selectCount;并把 status='CREATED' 一并下推到 SQL,
+        // 不再物化医嘱行后在 Java 里 anyMatch(原实现会拉回该就诊全部药品医嘱再过滤)。
+        Long medicationCount = orderMapper.selectCount(new LambdaQueryWrapper<Order>()
+                .eq(Order::getVisitId, visitId)
+                .eq(Order::getType, "MEDICATION")
+                .eq(Order::getStatus, "CREATED"));
+        boolean hasMedication = medicationCount != null && medicationCount > 0;
         if (hasMedication) {
             var patient = patientService.get(visit.getPatientId());
             String patientName = patient != null ? patient.getName() : "患者";
@@ -341,8 +357,11 @@ public class VisitService {
         if (curStatus != VisitStatus.CONFIRMED && curStatus != VisitStatus.IN_PROGRESS) {
             throw new IllegalStateException("仅已确单/进行中就诊单可结束(当前状态: " + visit.getStatus() + ")");
         }
-        boolean hasUnpaid = chargeMapper.selectList(null).stream()
-                .anyMatch(c -> visitId.equals(c.getVisitId()) && "UNPAID".equals(c.getPayStatus()));
+        // R-05: 只需判断"是否存在未缴",改用 selectCount 下推(不物化收费行),原实现拉全表再 anyMatch
+        Long unpaidCount = chargeMapper.selectCount(new LambdaQueryWrapper<Charge>()
+                .eq(Charge::getVisitId, visitId)
+                .eq(Charge::getPayStatus, "UNPAID"));
+        boolean hasUnpaid = unpaidCount != null && unpaidCount > 0;
         if (hasUnpaid) {
             throw new IllegalStateException("存在未缴费用,请先缴费或退费后再结束就诊");
         }
@@ -355,21 +374,29 @@ public class VisitService {
                     new LambdaQueryWrapper<Order>()
                             .eq(Order::getVisitId, visitId)
                             .eq(Order::getStatus, "CREATED"));
-            for (Order o : pendingOrders) {
-                o.setStatus("CANCELLED");
-                orderMapper.updateById(o);
+            // R-05: 批量作废医嘱同样改单条批量 UPDATE,不再 N 次 updateById
+            if (!pendingOrders.isEmpty()) {
+                orderMapper.update(null, new LambdaUpdateWrapper<Order>()
+                        .eq(Order::getVisitId, visitId)
+                        .eq(Order::getStatus, "CREATED")
+                        .set(Order::getStatus, "CANCELLED"));
             }
             // 作废医嘱对应的已收费记录 → 退费(保审计痕迹)
-            List<Long> cancelledIds = pendingOrders.stream().map(Order::getId).toList();
-            chargeMapper.selectList(null).stream()
-                    .filter(c -> visitId.equals(c.getVisitId()) && cancelledIds.contains(c.getOrderId()))
-                    .forEach(c -> {
-                        if ("PAID".equals(c.getPayStatus())) {
-                            c.setPayStatus("REFUNDED");
-                            c.setRefundTime(LocalDateTime.now());
-                            chargeMapper.updateById(c);
-                        }
-                    });
+            // R-05: id 为 null 的脏数据不能进 IN 列表,否则拼出非法 SQL
+            List<Long> cancelledIds = pendingOrders.stream()
+                    .map(Order::getId)
+                    .filter(Objects::nonNull)
+                    .toList();
+            // R-05: 原来 selectList(null) 拉全表 + Java 过滤,现改为单条批量 UPDATE
+            // (in 条件为空会生成非法 SQL,故先判空)
+            if (!cancelledIds.isEmpty()) {
+                chargeMapper.update(null, new LambdaUpdateWrapper<Charge>()
+                        .eq(Charge::getVisitId, visitId)
+                        .in(Charge::getOrderId, cancelledIds)
+                        .eq(Charge::getPayStatus, "PAID")
+                        .set(Charge::getPayStatus, "REFUNDED")
+                        .set(Charge::getRefundTime, LocalDateTime.now()));
+            }
         }
 
         visit.transitTo(VisitStatus.FINISHED);
@@ -391,9 +418,8 @@ public class VisitService {
                 new LambdaQueryWrapper<Order>().eq(Order::getVisitId, visitId));
         List<Charge> charges = chargeMapper.selectList(
                 new LambdaQueryWrapper<Charge>().eq(Charge::getVisitId, visitId));
-        BigDecimal total = charges.stream()
-                .map(Charge::getAmount)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        // R-06: 汇总金额跳过 null(防 NPE)并统一两位小数
+        BigDecimal total = sumAmount(charges);
         String payStatus = resolvePayStatus(charges);
         return VisitDetail.builder()
                 .visit(visit)
@@ -447,10 +473,10 @@ public class VisitService {
         wrapper.last("LIMIT " + pageSize + " OFFSET " + offset);
         List<VisitReadModel> readModels = readModelMapper.selectList(wrapper);
 
-        // 转换为 VisitDetail（详情仍走写模型，保证实时性）
-        List<VisitDetail> items = readModels.stream()
-                .map(rm -> convertToDetail(rm))
-                .toList();
+        // R-17: 原实现对每条读模型各查 3 次(visit / orders / charges),pageSize=10 即 1+30 次 SQL。
+        // 现改为 3 次批量查询(selectBatchIds + 两次 in 查询),再用 groupingBy 在内存里组装,
+        // 与页面条数无关的常量级 SQL,同时过滤掉 visit 已不存在的脏数据(原实现会留下 null 元素)。
+        List<VisitDetail> items = toDetails(readModels);
 
         return PageResult.<VisitDetail>builder()
                 .items(items)
@@ -461,27 +487,58 @@ public class VisitService {
     }
 
     /**
-     * 从读模型转换为 VisitDetail
+     * R-17: 批量把读模型列表组装为 VisitDetail 列表（3 次批量 SQL 取代 3N 次逐行回查）。
+     * visit 已被物理删除的读模型（脏数据）直接跳过，结果中不会出现 null 元素。
      */
-    private VisitDetail convertToDetail(VisitReadModel rm) {
-        Visit visit = visitMapper.selectById(rm.getVisitId());
-        if (visit == null) return null;
+    private List<VisitDetail> toDetails(List<VisitReadModel> readModels) {
+        if (readModels == null || readModels.isEmpty()) {
+            return List.of();
+        }
+        List<Long> visitIds = readModels.stream()
+                .map(VisitReadModel::getVisitId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        if (visitIds.isEmpty()) {
+            return List.of();
+        }
 
-        List<Order> orders = orderMapper.selectList(
-                new LambdaQueryWrapper<Order>().eq(Order::getVisitId, rm.getVisitId()));
-        List<Charge> charges = chargeMapper.selectList(
-                new LambdaQueryWrapper<Charge>().eq(Charge::getVisitId, rm.getVisitId()));
+        // 1 次查就诊 + 1 次查医嘱 + 1 次查收费
+        List<Visit> visits = visitMapper.selectBatchIds(visitIds);
+        Map<Long, Visit> visitMap = visits == null ? Map.of()
+                : visits.stream().filter(Objects::nonNull)
+                        .collect(Collectors.toMap(Visit::getId, Function.identity(), (a, b) -> a));
+        Map<Long, List<Order>> ordersByVisit = orderMapper.selectList(
+                        new LambdaQueryWrapper<Order>().in(Order::getVisitId, visitIds))
+                .stream().filter(o -> o.getVisitId() != null)
+                .collect(Collectors.groupingBy(Order::getVisitId));
+        Map<Long, List<Charge>> chargesByVisit = chargeMapper.selectList(
+                        new LambdaQueryWrapper<Charge>().in(Charge::getVisitId, visitIds))
+                .stream().filter(c -> c.getVisitId() != null)
+                .collect(Collectors.groupingBy(Charge::getVisitId));
 
-        return VisitDetail.builder()
-                .visit(visit)
-                .orders(orders)
-                .charges(charges)
-                .totalAmount(rm.getTotalAmount())
-                .patientName(rm.getPatientName())
-                .doctorName(rm.getDoctorName())
-                .deptName(rm.getDeptName())
-                .payStatus(rm.getPayStatus())
-                .build();
+        // 保持读模型原有顺序（即排序/分页顺序）
+        return readModels.stream()
+                .map(rm -> {
+                    Visit visit = visitMap.get(rm.getVisitId());
+                    if (visit == null) {
+                        return null; // 脏读模型（visit 已删除）→ 过滤掉，不留下 null 元素
+                    }
+                    List<Order> orders = ordersByVisit.getOrDefault(rm.getVisitId(), List.of());
+                    List<Charge> charges = chargesByVisit.getOrDefault(rm.getVisitId(), List.of());
+                    return VisitDetail.builder()
+                            .visit(visit)
+                            .orders(orders)
+                            .charges(charges)
+                            .totalAmount(rm.getTotalAmount())
+                            .patientName(rm.getPatientName())
+                            .doctorName(rm.getDoctorName())
+                            .deptName(rm.getDeptName())
+                            .payStatus(rm.getPayStatus())
+                            .build();
+                })
+                .filter(Objects::nonNull)
+                .toList();
     }
 
     /** 删除草稿状态就诊单(级联删除医嘱 + 收费)。 */
@@ -510,20 +567,36 @@ public class VisitService {
                     CurrentUserResolver.resolveUsername());
             return List.of();
         }
-        List<Order> allOrders = orderMapper.selectList(null);
-        List<Visit> visits = visitMapper.selectList(null).stream()
+        // R-18: 原实现在循环内对每条 visit 各拉一次全表 orders / charges,复杂度 O(V×(O+C)),
+        // 现把两表各查一次(V 的 visitId 集合下推 in 条件),再用 groupingBy 分组,降为 O(V+O+C)。
+        List<Visit> allVisits = visitMapper.selectList(null);
+        if (allVisits == null || allVisits.isEmpty()) {
+            return List.of();
+        }
+        List<Long> visitIds = allVisits.stream()
+                .map(Visit::getId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        // in 条件为空会拼出非法 SQL,故判空后再查;过滤语义与 isVisibleToDept 保持一致
+        List<Order> allOrders = visitIds.isEmpty() ? List.of()
+                : orderMapper.selectList(new LambdaQueryWrapper<Order>().in(Order::getVisitId, visitIds));
+        List<Charge> allCharges = visitIds.isEmpty() ? List.of()
+                : chargeMapper.selectList(new LambdaQueryWrapper<Charge>().in(Charge::getVisitId, visitIds));
+        Map<Long, List<Order>> ordersByVisit = allOrders.stream()
+                .filter(o -> o.getVisitId() != null)
+                .collect(Collectors.groupingBy(Order::getVisitId));
+        Map<Long, List<Charge>> chargesByVisit = allCharges.stream()
+                .filter(c -> c.getVisitId() != null)
+                .collect(Collectors.groupingBy(Charge::getVisitId));
+        List<Visit> visits = allVisits.stream()
                 .filter(v -> isVisibleToDept(v, currentDeptId, allOrders))  // 科室过滤(含执行科室)
                 .toList();
         return visits.stream().map(v -> {
-            List<Order> orders = orderMapper.selectList(null).stream()
-                    .filter(o -> v.getId().equals(o.getVisitId()))
-                    .toList();
-            List<Charge> charges = chargeMapper.selectList(null).stream()
-                    .filter(c -> v.getId().equals(c.getVisitId()))
-                    .toList();
-            BigDecimal total = charges.stream()
-                    .map(Charge::getAmount)
-                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            List<Order> orders = ordersByVisit.getOrDefault(v.getId(), List.of());
+            List<Charge> charges = chargesByVisit.getOrDefault(v.getId(), List.of());
+            // R-06: 汇总金额跳过 null(防 NPE)并统一两位小数
+            BigDecimal total = sumAmount(charges);
             String payStatus = resolvePayStatus(charges);
             return VisitDetail.builder()
                     .visit(v)
@@ -554,6 +627,46 @@ public class VisitService {
         if (charges == null || charges.isEmpty()) return "NO_CHARGES";
         boolean hasUnpaid = charges.stream().anyMatch(c -> "UNPAID".equals(c.getPayStatus()));
         return hasUnpaid ? "HAS_UNPAID" : "ALL_PAID";
+    }
+
+    /**
+     * R-06: 金额统一计算入口 —— 金额 = 单价 × 数量,固定两位小数(HALF_UP)。
+     * <p>
+     * 原实现直接 {@code unitPrice.multiply(valueOf(quantity))}:
+     * 单价为 null → NPE 导致整单建单失败;数量为负 → 负金额,可构造"负额结算";
+     * 且全链路无 setScale,多次累加后 scale 漂移。此处统一收口校验与精度。
+     *
+     * @throws IllegalArgumentException 单价/数量为 null,或数量为负、单价为负
+     */
+    private BigDecimal calcAmount(BigDecimal unitPrice, Integer quantity) {
+        if (unitPrice == null) {
+            throw new IllegalArgumentException("医嘱单价不能为空");
+        }
+        if (quantity == null) {
+            throw new IllegalArgumentException("医嘱数量不能为空");
+        }
+        if (quantity < 0) {
+            throw new IllegalArgumentException("医嘱数量不能为负数: " + quantity);
+        }
+        if (unitPrice.signum() < 0) {
+            throw new IllegalArgumentException("医嘱单价不能为负数: " + unitPrice);
+        }
+        return unitPrice.multiply(BigDecimal.valueOf(quantity)).setScale(2, RoundingMode.HALF_UP);
+    }
+
+    /**
+     * R-06: 汇总收费金额 —— 跳过 null 金额(数据库脏数据 / 未回填时原实现会 NPE),
+     * 结果统一两位小数(HALF_UP),避免 reduce 后 scale 漂移。
+     */
+    private BigDecimal sumAmount(List<Charge> charges) {
+        if (charges == null || charges.isEmpty()) {
+            return BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+        }
+        return charges.stream()
+                .map(Charge::getAmount)
+                .filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add)
+                .setScale(2, RoundingMode.HALF_UP);
     }
 
     /**

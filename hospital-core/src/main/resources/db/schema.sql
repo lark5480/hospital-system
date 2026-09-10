@@ -303,6 +303,60 @@ CREATE INDEX IF NOT EXISTS idx_visit_rm_chief_complaint ON clinical.visit_read_m
 CREATE INDEX IF NOT EXISTS idx_visit_rm_visit_time ON clinical.visit_read_model(visit_time DESC);
 CREATE INDEX IF NOT EXISTS idx_visit_rm_dept_id ON clinical.visit_read_model(dept_id);
 
+-- ===================== R-04:热路径索引(性能地基) =====================
+-- 背景:除读模型(visit_read_model)与病历(medical_record)外,所有业务基表的
+-- 外键与过滤列都没有二级索引。10 万 visit / 30 万 orders / 30 万 charge 时,
+-- 单次 getDetail 触发 2 次 30 万行 Seq Scan,listPage 每页扫描约 600 万行。
+-- 这些索引是 PERF-02/05/06/14 等一系列"全表扫描"问题得以根治的前提。
+--
+-- 全部使用 IF NOT EXISTS,重复执行安全。
+-- 注意:本脚本只在全新 pg-data 卷的 initdb 阶段执行,故用普通建法;
+-- 对已有数据的存量库请改用 CREATE INDEX CONCURRENTLY(避免建索引期间锁表)。
+CREATE INDEX IF NOT EXISTS idx_visit_patient_id    ON clinical.visit(patient_id);
+CREATE INDEX IF NOT EXISTS idx_visit_dept_id       ON clinical.visit(dept_id);
+CREATE INDEX IF NOT EXISTS idx_visit_doctor_id     ON clinical.visit(doctor_id);
+CREATE INDEX IF NOT EXISTS idx_visit_status        ON clinical.visit(status);
+CREATE INDEX IF NOT EXISTS idx_visit_created_at    ON clinical.visit(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_orders_visit_id     ON clinical.orders(visit_id);
+CREATE INDEX IF NOT EXISTS idx_orders_exec_dept    ON clinical.orders(execution_dept_id);
+CREATE INDEX IF NOT EXISTS idx_orders_type_status  ON clinical.orders(type, status);
+CREATE INDEX IF NOT EXISTS idx_charge_visit_id     ON clinical.charge(visit_id);
+CREATE INDEX IF NOT EXISTS idx_charge_visit_pay    ON clinical.charge(visit_id, pay_status);
+CREATE INDEX IF NOT EXISTS idx_charge_order_id     ON clinical.charge(order_id);
+CREATE INDEX IF NOT EXISTS idx_reg_dept_created    ON clinical.registration(dept_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_reg_patient_id      ON clinical.registration(patient_id);
+CREATE INDEX IF NOT EXISTS idx_reg_visit_id        ON clinical.registration(visit_id);
+CREATE INDEX IF NOT EXISTS idx_reg_status          ON clinical.registration(status);
+CREATE INDEX IF NOT EXISTS idx_slot_pkg_date       ON booking.slot(package_id, exam_date);
+CREATE INDEX IF NOT EXISTS idx_slot_date           ON booking.slot(exam_date);
+CREATE INDEX IF NOT EXISTS idx_appt_patient        ON booking.appointment(patient_id);
+CREATE INDEX IF NOT EXISTS idx_appt_slot           ON booking.appointment(slot_id);
+CREATE INDEX IF NOT EXISTS idx_appt_package        ON booking.appointment(package_id);
+CREATE INDEX IF NOT EXISTS idx_appt_status         ON booking.appointment(status);
+CREATE INDEX IF NOT EXISTS idx_exam_item_package   ON booking.exam_item(package_id);
+CREATE INDEX IF NOT EXISTS idx_task_appt           ON dispatch.exam_task(appointment_id);
+CREATE INDEX IF NOT EXISTS idx_task_station_status ON dispatch.exam_task(station, status, seq);
+CREATE INDEX IF NOT EXISTS idx_task_patient_status ON dispatch.exam_task(patient_id, status);
+CREATE INDEX IF NOT EXISTS idx_board_station       ON dispatch.queue_board(station, status, seq);
+CREATE INDEX IF NOT EXISTS idx_board_created_at    ON dispatch.queue_board(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_report_visit        ON report.record(visit_id);
+CREATE INDEX IF NOT EXISTS idx_report_patient      ON report.record(patient_id);
+CREATE INDEX IF NOT EXISTS idx_report_type_status  ON report.record(type, status);
+CREATE INDEX IF NOT EXISTS idx_report_appointment  ON report.record(appointment_id);
+CREATE INDEX IF NOT EXISTS idx_rx_visit            ON pharmacy.prescription(visit_id);
+CREATE INDEX IF NOT EXISTS idx_rx_patient          ON pharmacy.prescription(patient_id);
+CREATE INDEX IF NOT EXISTS idx_rx_status           ON pharmacy.prescription(status);
+CREATE INDEX IF NOT EXISTS idx_rx_item_rx          ON pharmacy.prescription_item(prescription_id);
+CREATE INDEX IF NOT EXISTS idx_rx_item_order       ON pharmacy.prescription_item(order_id);
+CREATE INDEX IF NOT EXISTS idx_lab_req_visit       ON lab.requisition(visit_id);
+CREATE INDEX IF NOT EXISTS idx_lab_req_patient     ON lab.requisition(patient_id);
+CREATE INDEX IF NOT EXISTS idx_lab_req_status      ON lab.requisition(status);
+CREATE INDEX IF NOT EXISTS idx_lab_item_req        ON lab.result_item(requisition_id);
+CREATE INDEX IF NOT EXISTS idx_lab_item_order      ON lab.result_item(order_id);
+CREATE INDEX IF NOT EXISTS idx_audit_created       ON platform.audit_log(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_actor         ON platform.audit_log(actor);
+CREATE INDEX IF NOT EXISTS idx_audit_action        ON platform.audit_log(action);
+
 -- ===================== 药事域 =====================
 CREATE SCHEMA IF NOT EXISTS pharmacy;
 

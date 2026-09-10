@@ -18,7 +18,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.List;
+import java.util.Objects;
 
 @Slf4j
 @Service
@@ -52,9 +54,9 @@ public class VisitReadModelService {
 
         // 计算聚合字段
         int orderCount = orders.size();
-        BigDecimal totalAmount = charges.stream()
-                .map(Charge::getAmount)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        // R-06: 汇总金额跳过 null 记录(脏数据/未回填时原实现会 NPE),并统一两位小数(HALF_UP),
+        // 避免与 VisitService 侧金额口径不一致、以及多次刷新后 scale 漂移。
+        BigDecimal totalAmount = sumAmount(charges);
         long unpaidCount = charges.stream()
                 .filter(c -> "UNPAID".equals(c.getPayStatus()))
                 .count();
@@ -131,6 +133,20 @@ public class VisitReadModelService {
         if (charges.isEmpty()) return "NO_CHARGES";
         boolean hasUnpaid = charges.stream().anyMatch(c -> "UNPAID".equals(c.getPayStatus()));
         return hasUnpaid ? "HAS_UNPAID" : "ALL_PAID";
+    }
+
+    /**
+     * R-06: 汇总收费金额 —— 跳过 null 金额(原实现 null 会 NPE),结果统一两位小数(HALF_UP)。
+     */
+    private BigDecimal sumAmount(List<Charge> charges) {
+        if (charges == null || charges.isEmpty()) {
+            return BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+        }
+        return charges.stream()
+                .map(Charge::getAmount)
+                .filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add)
+                .setScale(2, RoundingMode.HALF_UP);
     }
 
     @FunctionalInterface
