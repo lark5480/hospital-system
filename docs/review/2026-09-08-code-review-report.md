@@ -5,7 +5,7 @@
 - **参与 Agent**：SECURITY（安全）、PERFORMANCE（性能）、TESTING（测试质量）
 - **流程**：第 1 轮三方独立审查 → 第 2 轮交叉质询（反驳 / 降级 / 升级 / 补充 / 自我修正 / 预判辩护）→ 第 3 轮主席收敛
 - **产出**：61 条问题（6 Critical / 22 High / 26 Medium / 7 Low），含 8 条质询后新增、9 条质询后改级
-- **实施状态（2026-09-09）**：P0 七项已全部落盘，另按「待拍板 5 件事」的分析结论完成 4 项加固 —— **22 项已修复、3 项部分修复**，均未提交 git。详见下方「实施状态总览」
+- **实施状态（2026-09-10 更新）**：P0 七项 + P1 性能/工程化已全部落盘，另按「待拍板 5 件事」的分析结论完成 4 项加固 —— **29 项已修复、1 项已缓解、4 项部分修复**。详见下方「实施状态总览」
 - **定级标准**：
   - **Critical**：可直接导致批量敏感数据泄露 / 权限完全失守，或线上必然不可用
   - **High**：需要低门槛前置条件即可造成实质损害，或数据量到 10 万级必然劣化到不可用
@@ -33,6 +33,13 @@
 | R-22 | `RestTemplate` connect 3s / read 15s；`reportPdfExecutor` 补 `CallerRunsPolicy` | `AsyncConfig`、`FileServiceClient` |
 | R-30 | `objectName` 正则校验；20MB 限制；同名对象 409 禁止覆盖（防报告投毒）；上传响应体 `Map.of` NPE 修复 | `FileController`、file-service `application.yml` |
 | R-57 | 删除 `AuthService` 空密码免密分支；`PasswordController` 对称分支一并删除 | `AuthService`、`PasswordController` |
+| R-16 | 读模型写放大：新增一条聚合 SQL（`VisitReadModelMapper.selectAggregate`）取代 2 次全量 selectList；名称解析走 `NameCache`；`addOrder/editOrder/cancelOrder` 复用刷新结果，不再重复 `getDetail()`。**异步刷新主动放弃**（会破坏 `VisitReadModelTest` 的事务可见性），已在 javadoc 写明 | `VisitReadModelService`、`VisitReadModelMapper`、`VisitService` |
+| R-19 | 名称解析 N+1：新增 `NameCache`（TTL 5min / 上限 5000 / 惰性清理），lab / pharmacy / report 列表改为批量解析（一次 `WHERE id IN`），出参结构不变 | 新增 `platform/support/NameCache`、`LabService`、`PrescriptionService`、`ReportService` |
+| R-20 | 搜索索引失效：引入 `pg_trgm` 扩展 + 5 个 GIN 三元组索引，使 `LIKE '%kw%'` 也能走索引，**Java 查询无需改动**；注释说明中文场景后续应换 `zhparser` + `tsvector` | `db/schema.sql` |
+| R-31 | 审计异常短路：改为 `try/finally` 包裹，失败操作同样留痕（detail 追加 `FAILED: 异常类型`）；审计写入失败不再影响业务流程；detail 超长安全截断 | `AuditLogAspect` |
+| R-32 | 错误信息直出：`include-message` / `include-stacktrace` 由 `always` 改为 `never`（业务中文提示由 `GlobalExceptionHandler` 显式构造，不受影响） | core `application.yml` |
+| R-35 | 通知服务 CORS：`allowedOriginPatterns("*")` + `allowCredentials(true)` 的危险组合，改为可配置 `app.cors.allowed-origins`，默认仅本机开发源（与 core 口径一致） | `CorsConfig`、notification `application.yml` |
+| R-36 | 中间件暴露：compose 中 PG/Redis/MinIO/RabbitMQ 全部端口改绑 `127.0.0.1`（原先内网任何人可用默认口令直连拖库）；新增 `.env.example` 列出全部需覆盖的密钥 | `docker-compose.yml`、新增 `.env.example` |
 | 决策 4B | **由网关注入 `X-Internal-Token`**（`AddRequestHeader`）——令牌只存在于服务端，浏览器永不接触，前端零改动；file-service 在 prod 未配置令牌即拒绝启动（与 R-01 对称） | gateway `application.yml`、`InternalTokenFilter`、file-service `SecurityConfig` |
 | 决策 5 | **改密/重置即吊销该用户全部 token**（新增 `TokenRevocationService`，Redis 用户维度，TTL 与 token 对齐）；JWT TTL 8h→4h；`issue()` 加 jti 为单设备登出预留 | `TokenRevocationService`(新)、`JwtAuthFilter`、`JwtTokenService`、`PasswordController`、`ChangePasswordView.vue` |
 
@@ -160,9 +167,9 @@ List<Charge> unpaid = chargeMapper.selectList(null).stream()      // 无 WHERE
 
 ## 三、High 问题（22 条）
 
-> **已修复**：R-07、R-08、R-09、R-10、R-12、R-13、R-14、R-22
-> **部分修复**：R-11（notification 仍 permitAll）、R-18（仅加全量兜底，算法未优化）
-> **未启动**：R-15、R-16、R-17、R-19、R-20、R-21、R-23、R-24、R-25、R-26、R-27、R-28
+> **已修复**：R-07、R-08、R-09、R-10、R-12、R-13、R-14、R-16、R-17、R-18、R-19、R-20、R-22、R-23、R-24、R-26、R-27、R-28
+> **部分修复**：R-11（notification 仍 permitAll）
+> **未启动**：R-15（启动重建守卫）、R-21（建单批量写，已留 TODO P2）、R-25（重复预约幂等校验）
 
 | 编号 | 标题 | 维度 | 位置 | 备注 |
 |---|---|---|---|---|
@@ -193,9 +200,10 @@ List<Charge> unpaid = chargeMapper.selectList(null).stream()      // 无 WHERE
 
 ## 四、Medium 问题（26 条）
 
-> **已修复**：R-30（上传正则 + 20MB + 禁止覆盖）
-> **部分修复**：R-33（`/actuator` 已收口，Swagger 仍放行）、R-45（锁定/限流已落地，BCrypt cost 未提）
-> **未启动**：R-29、R-31、R-32、R-35、R-36、R-37、R-38、R-39、R-40、R-41、R-42、R-43、R-44、R-46～R-55
+> **已修复**：R-30（上传正则 + 20MB + 禁止覆盖）、R-31（审计失败也留痕）、R-32（错误信息不再直出）、R-35（CORS 不再通配）、R-36（中间件端口收回环 + `.env.example`）
+> **已缓解**：R-29（全表扫描与长事务已由 R-04/R-05 治理，锁等待放大面显著收窄；未单独做压测验证）
+> **部分修复**：R-33（`/actuator` 已收口，Swagger 仍放行）、R-34（改密吊销已实现，`?token=` query 回退未动）、R-45（锁定/限流已落地，BCrypt cost 未提）
+> **未启动**：R-37、R-38、R-39、R-40、R-41、R-42、R-43、R-44（审计仍同步写）、R-46～R-55
 
 | 编号 | 标题 | 维度 | 位置 |
 |---|---|---|---|

@@ -357,6 +357,28 @@ CREATE INDEX IF NOT EXISTS idx_audit_created       ON platform.audit_log(created
 CREATE INDEX IF NOT EXISTS idx_audit_actor         ON platform.audit_log(actor);
 CREATE INDEX IF NOT EXISTS idx_audit_action        ON platform.audit_log(action);
 
+-- ===================== R-20:模糊搜索索引(pg_trgm) =====================
+-- 背景:就诊列表与患者搜索用 LIKE '%关键字%'(前置通配),B-tree 索引一律失效,
+-- 10 万行即退化为全表扫描。PostgreSQL 的 pg_trgm 扩展提供三元组 GIN 索引,
+-- 可让'%kw%'这种前置通配也走索引,因此**无需改动 Java 查询**。
+--
+-- 注意:
+--  1) CREATE EXTENSION 需要超级用户权限(本 compose 用的 postgres 是超级用户,OK);
+--     若目标库无权限,需由 DBA 预先执行,否则本节索引创建失败(不影响其它表)。
+--  2) 中文场景下三元组切分效果有限(按字符而非词),数据量继续增大时应改用
+--     zhparser + tsvector 的全文检索方案(P2)。当前规模下 trgm 已能把
+--     '%kw%' 扫描从"全表"降到"仅匹配行数级别"。
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+CREATE INDEX IF NOT EXISTS idx_patient_name_trgm   ON patient.patient USING GIN (name gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_patient_phone_trgm  ON patient.patient USING GIN (phone gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_visit_rm_patient_name_trgm
+    ON clinical.visit_read_model USING GIN (patient_name gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_visit_rm_doctor_name_trgm
+    ON clinical.visit_read_model USING GIN (doctor_name gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_visit_rm_chief_complaint_trgm
+    ON clinical.visit_read_model USING GIN (chief_complaint gin_trgm_ops);
+
 -- ===================== 药事域 =====================
 CREATE SCHEMA IF NOT EXISTS pharmacy;
 

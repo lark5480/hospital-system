@@ -10,6 +10,12 @@ spring:
     username: ${RABBIT_USER:admin}
     password: ${RABBIT_PASSWORD:admin123}
 
+# R-35: 通知服务允许的跨域来源(逗号分隔)。
+# 默认只放行本机开发端口;生产必须显式配置为真实前端域名,严禁使用 *。
+app:
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:*}
+
 logging:
   # R-24: 由 debug 降为 info —— SSE 连接的心跳与广播日志在 DEBUG 下会高频刷盘,
   # 且日志内容含患者姓名等 PHI。排障时用 --logging.level.com.hospital=debug 临时打开。

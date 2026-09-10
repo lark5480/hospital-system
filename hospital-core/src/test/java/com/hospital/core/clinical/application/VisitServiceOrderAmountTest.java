@@ -181,13 +181,18 @@ class VisitServiceOrderAmountTest {
     class TotalAmount {
 
         @Test
-        @DisplayName("totalAmount_nullAmountIgnored: 读模型汇总跳过 null 金额并保留两位小数(原实现 NPE)")
+        @DisplayName("totalAmount_twoDigits: 读模型聚合下沉为一条 SQL 后金额保留两位小数")
         void totalAmount_nullAmountIgnored() {
             when(visitMapper.selectById(1L)).thenReturn(visit(1L, "CREATED"));
-            when(chargeMapper.selectList(any())).thenReturn(List.of(
-                    charge(1L, 1L, 1L, null, "UNPAID"),           // 脏数据:金额为 null
-                    charge(2L, 1L, 2L, new BigDecimal("10.505"), "UNPAID")
-            ));
+            // R-16: refresh 的 orders/charge 全量 selectList 已改为 VisitReadModelMapper.selectAggregate
+            // 一条聚合 SQL(COALESCE(SUM(amount),0) 天然跳过金额为 null 的脏数据),
+            // 故此处直接桩定聚合结果,校验写回读模型的金额/缴费状态口径。
+            var agg = new VisitReadModelMapper.VisitAggregate();
+            agg.setOrderCount(0);
+            agg.setChargeCount(2);
+            agg.setUnpaidCount(2);
+            agg.setTotalAmount(new BigDecimal("10.51")); // 等价于 SUM(null, 10.505) → HALF_UP
+            when(readModelMapper.selectAggregate(1L)).thenReturn(agg);
             when(readModelMapper.selectByVisitId(1L)).thenReturn(null);
 
             readModelServiceUnderTest.refresh(1L);
@@ -196,6 +201,7 @@ class VisitServiceOrderAmountTest {
             BigDecimal total = readModelCaptor.getValue().getTotalAmount();
             assertThat(total).isEqualByComparingTo(new BigDecimal("10.51")); // 10.505 → HALF_UP
             assertThat(total.scale()).isEqualTo(2);
+            assertThat(readModelCaptor.getValue().getPayStatus()).isEqualTo("HAS_UNPAID");
         }
 
         @Test

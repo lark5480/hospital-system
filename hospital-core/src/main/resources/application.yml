@@ -1,7 +1,12 @@
 server:
   port: 8101
   error:
-    include-message: always
+    # R-32: 原先 always —— 未走 GlobalExceptionHandler 的异常会把 message 与堆栈细节
+    # 直接回给调用方,泄露内部实现甚至 SQL 片段。业务异常的中文提示由
+    # GlobalExceptionHandler 显式构造,不受此配置影响,故设为 never 不损失可用性。
+    # 本地排障可临时用 --server.error.include-message=always 打开。
+    include-message: never
+    include-stacktrace: never
 
 spring:
   application:

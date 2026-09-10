@@ -21,12 +21,14 @@ import com.hospital.core.platform.domain.Role;
 import com.hospital.core.platform.infrastructure.AuditLogMapper;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 
 /**
  * 审计日志切面:拦截 {@link AuditLog} 注解的方法,在成功执行后写入 audit_log 表。
  * <p>
  * target 字段从方法参数或返回值自动提取实体 ID 构建,如 "visit_id=42"。
  */
+@Slf4j
 @Aspect
 @Component
 @RequiredArgsConstructor
@@ -34,21 +36,54 @@ public class AuditLogAspect {
 
     private final AuditLogMapper auditLogMapper;
 
+    /**
+     * R-31: 审计写入必须用 try/finally 包裹 —— 原实现在 {@code jp.proceed()} 之后才写审计,
+     * 一旦业务抛出异常(如越权被拒、状态机校验失败),审计记录<b>一条都不会留</b>,
+     * 而"失败的操作"往往才是最需要留痕的(越权探测、非法状态流转)。
+     *
+     * <p>注意:这里记录的是"操作发生且失败",detail 追加 FAILED 标记与异常类型;
+     * 异常仍原样抛出,不改变对外行为。
+     */
     @Around("@annotation(auditLog)")
     public Object audit(ProceedingJoinPoint jp, AuditLog auditLog) throws Throwable {
-        Object result = jp.proceed();
-
-        var log = new com.hospital.core.platform.domain.AuditLog();
-        log.setActor(currentUser());
-        log.setAction(auditLog.action());
-        log.setTarget(buildTarget(jp, result));
-        if (!auditLog.detail().isEmpty()) {
-            log.setDetail(auditLog.detail());
+        try {
+            Object result = jp.proceed();
+            writeAuditLog(jp, auditLog, result, null);
+            return result;
+        } catch (Throwable t) {
+            writeAuditLog(jp, auditLog, null, t);
+            throw t;
         }
-        log.setCreatedAt(LocalDateTime.now());
-        auditLogMapper.insert(log);
+    }
 
-        return result;
+    /**
+     * 写入一条审计记录。失败场景下 result 为 null,{@link #buildTarget} 会退化为从入参提取目标。
+     *
+     * @param failure 业务抛出的异常;为 null 表示操作成功
+     */
+    private void writeAuditLog(ProceedingJoinPoint jp, AuditLog auditLog, Object result, Throwable failure) {
+        var entry = new com.hospital.core.platform.domain.AuditLog();
+        entry.setActor(currentUser());
+        entry.setAction(auditLog.action());
+        entry.setTarget(buildTarget(jp, result));
+        String detail = auditLog.detail();
+        if (failure != null) {
+            String failed = "FAILED: " + failure.getClass().getSimpleName()
+                    + (failure.getMessage() == null ? "" : ": " + failure.getMessage());
+            detail = detail == null || detail.isEmpty() ? failed : detail + " | " + failed;
+        }
+        if (detail != null && !detail.isEmpty()) {
+            // detail 列长度 500,超长会插入失败,这里做安全截断
+            entry.setDetail(detail.length() > 500 ? detail.substring(0, 500) : detail);
+        }
+        entry.setCreatedAt(LocalDateTime.now());
+        try {
+            auditLogMapper.insert(entry);
+        } catch (RuntimeException e) {
+            // R-31: 审计写入失败绝不能影响业务流程(尤其失败场景下不能把原始异常替换掉)
+            log.error("[AuditLogAspect] 审计日志写入失败: action={}, target={}",
+                    auditLog.action(), entry.getTarget(), e);
+        }
     }
 
     private static String currentUser() {

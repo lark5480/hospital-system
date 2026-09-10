@@ -11,6 +11,7 @@ import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.GrantedAuthority;
@@ -37,6 +38,7 @@ import com.hospital.core.org.application.DepartmentService;
 import com.hospital.core.org.application.StaffService;
 import com.hospital.core.patient.application.PatientService;
 import com.hospital.core.platform.security.CurrentUserResolver;
+import com.hospital.core.platform.support.NameCache;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -55,6 +57,11 @@ public class VisitService {
     private final DepartmentService departmentService;
     private final VisitReadModelService readModelService;
     private final VisitReadModelMapper readModelMapper;
+
+    // R-16: 名称解析缓存(字段注入,不改构造签名,兼容既有单测直接 new)。
+    // getDetail()/list() 的名称解析统一走此缓存,与读模型刷新共用同一份 5 分钟窗口数据,保证口径一致。
+    @Autowired(required = false)
+    private NameCache nameCache;
 
     /** 简单建就诊(无医嘱);保留以向后端直接调用。 */
     @Transactional
@@ -83,6 +90,10 @@ public class VisitService {
         // R-05: 医嘱/收费仍是逐条 insert(N 条医嘱 = N 次 insert + N 次 charge insert)。
         // TODO(R-05 待办): 后续可改为 MyBatis-Plus 批量插入或 XML foreach 批量落库,
         // 本期为控制改造风险(保持 public 签名与事件时序不变)暂保持逐条,但金额统一走 calcAmount 校验。
+        // TODO(P2 R-21): 建单批量写 —— 在不改 Mapper 签名、不新增依赖的前提下,可考虑用
+        //   MyBatis @Insert + <foreach> 批量插入;但需回填自增主键、且 charge.orderId 依赖 order.id,
+        //   风险与收益不匹配,本期不做。后续如启用 PostgreSQL JDBC 的 reWriteBatchedInserts=true,
+        //   配合 JDBC batch,可获得真正的批量写收益。
         BigDecimal total = BigDecimal.ZERO;
         for (Order order : orders) {
             order.setVisitId(visit.getId());
@@ -186,8 +197,8 @@ public class VisitService {
                     order.getExecutionDeptId()));
         }
 
-        readModelService.refresh(visitId);
-        return getDetail(visitId);
+        // R-16: 复用本次刷新已算好的读模型(名称/金额/缴费状态),避免 refresh 后再 getDetail() 重查一遍
+        return buildDetailReusingReadModel(visitId);
     }
 
     /**
@@ -228,8 +239,8 @@ public class VisitService {
         eventPublisher.publishEvent(new OrderUpdatedEvent(
                 orderId, existing.getItemName(), existing.getQuantity(), existing.getUnitPrice()));
 
-        readModelService.refresh(visitId);
-        return getDetail(visitId);
+        // R-16: 复用本次刷新已算好的读模型,避免 refresh 后再 getDetail() 重查一遍
+        return buildDetailReusingReadModel(visitId);
     }
 
     /**
@@ -255,8 +266,8 @@ public class VisitService {
                 .eq(Charge::getOrderId, orderId)
                 .eq(Charge::getPayStatus, "UNPAID"));
 
-        readModelService.refresh(visitId);
-        return getDetail(visitId);
+        // R-16: 复用本次刷新已算好的读模型,避免 refresh 后再 getDetail() 重查一遍
+        return buildDetailReusingReadModel(visitId);
     }
 
     /**
@@ -430,6 +441,39 @@ public class VisitService {
                 .doctorName(resolveDoctorName(visit.getDoctorId()))
                 .deptName(resolveDeptName(visit.getDeptId()))
                 .payStatus(payStatus)
+                .build();
+    }
+
+    /**
+     * R-16: 刷新读模型并复用其已算好的名称/金额/缴费状态拼装详情,替代
+     * "refresh() 之后再 getDetail() 重查 visit/orders/charges/名称"的写放大。
+     *
+     * <p>出参与 {@link #getDetail(Long)} 完全一致:visit/orders/charges 用相同查询(保持行序),
+     * totalAmount/payStatus/名称沿用读模型(其口径见 {@link VisitReadModelService},与原 getDetail 相同)。
+     * 仅当 refresh 返回 null(读模型刷新时就诊已被物理删除)时回退 getDetail()。
+     */
+    private VisitDetail buildDetailReusingReadModel(Long visitId) {
+        VisitReadModel rm = readModelService.refresh(visitId);
+        if (rm == null) {
+            return getDetail(visitId);
+        }
+        Visit visit = visitMapper.selectById(visitId);
+        if (visit == null) {
+            return null;
+        }
+        List<Order> orders = orderMapper.selectList(
+                new LambdaQueryWrapper<Order>().eq(Order::getVisitId, visitId));
+        List<Charge> charges = chargeMapper.selectList(
+                new LambdaQueryWrapper<Charge>().eq(Charge::getVisitId, visitId));
+        return VisitDetail.builder()
+                .visit(visit)
+                .orders(orders)
+                .charges(charges)
+                .totalAmount(rm.getTotalAmount())
+                .patientName(rm.getPatientName())
+                .doctorName(rm.getDoctorName())
+                .deptName(rm.getDeptName())
+                .payStatus(rm.getPayStatus())
                 .build();
     }
 
@@ -744,7 +788,12 @@ public class VisitService {
 
     private String resolvePatientName(Long patientId) {
         if (patientId == null) return null;
-        try { return patientService.getName(patientId); } catch (Exception e) { return null; }
+        // R-16: 走 NameCache,命中则零查询;无 Spring 上下文(纯单测)时退化为直接回源
+        try {
+            return nameCache != null
+                    ? nameCache.getOrLoad("patient", patientId, patientService::getName)
+                    : patientService.getName(patientId);
+        } catch (Exception e) { return null; }
     }
 
     /** 批量查询就诊单缴费状态(仅返回是否全部缴清,不暴露金额)。 */
@@ -762,7 +811,14 @@ public class VisitService {
 
     private String resolveDoctorName(Long doctorId) {
         if (doctorId == null) return null;
+        // R-16: 走 NameCache(与读模型刷新共用同一份 5 分钟窗口数据);无上下文时退化为直接回源
         try {
+            if (nameCache != null) {
+                return nameCache.getOrLoad("staff", doctorId, id -> {
+                    var staff = staffService.get(id);
+                    return staff == null ? null : staff.getName();
+                });
+            }
             var staff = staffService.get(doctorId);
             return staff == null ? null : staff.getName();
         } catch (Exception e) { return null; }
@@ -770,7 +826,14 @@ public class VisitService {
 
     private String resolveDeptName(Long deptId) {
         if (deptId == null) return null;
+        // R-16: 走 NameCache(与读模型刷新共用同一份 5 分钟窗口数据);无上下文时退化为直接回源
         try {
+            if (nameCache != null) {
+                return nameCache.getOrLoad("dept", deptId, id -> {
+                    var dept = departmentService.get(id);
+                    return dept == null ? null : dept.getName();
+                });
+            }
             var dept = departmentService.get(deptId);
             return dept == null ? null : dept.getName();
         } catch (Exception e) { return null; }

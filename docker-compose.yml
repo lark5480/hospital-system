@@ -33,6 +33,17 @@
 #   mvn -pl hospital-gateway spring-boot:run              # :8104
 #   cd hospital-web && npm run dev                        # :5173（Vite 代理到网关）
 # =============================================================
+#
+# 【R-36 安全说明】以下口令都是**本地开发演示默认值**,通过环境变量可覆盖:
+#   PG_PASSWORD / MINIO_ACCESS_KEY / MINIO_SECRET_KEY / RABBIT_PASSWORD / REDIS_PASSWORD
+# 生产环境务必用 .env(参考 .env.example)覆盖,并注意:
+#   1) 所有中间件端口已绑定 127.0.0.1,只允许本机访问,不对局域网/公网暴露。
+#      原先直接映射 "5432:5432" 会让内网任何人用默认口令连上 PostgreSQL,
+#      读到 patient.patient 的身份证明文、以及 MinIO 里的全部报告文件。
+#   2) Redis 未启用密码(requirepass)。因端口已收回环,本机开发可接受;
+#      若确需跨机访问,请自行加 requirepass 并同步 core 的 spring.data.redis.password。
+#   3) 本文件仅用于本地开发;生产部署请勿直接使用这些默认口令。
+# =============================================================
 
 services:
   postgres:
@@ -43,7 +54,8 @@ services:
       POSTGRES_PASSWORD: ${PG_PASSWORD:-root123}
       POSTGRES_DB: ${PG_DB:-hospital}
     ports:
-      - "5432:5432"
+      # R-36: 绑定回环,禁止内网直连
+      - "127.0.0.1:5432:5432"
     volumes:
       - pg-data:/var/lib/postgresql/data
       - ./hospital-core/src/main/resources/db/schema.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
@@ -57,7 +69,8 @@ services:
     image: redis:7
     container_name: hospital-redis
     ports:
-      - "6379:6379"
+      # R-36: 绑定回环;Redis 无密码,绝不能对外暴露
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -72,8 +85,9 @@ services:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      # R-36: 绑定回环 —— MinIO Console(9001) 用默认口令可浏览/下载全部报告文件
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     volumes:
       - minio-data:/data
     healthcheck:
@@ -89,8 +103,9 @@ services:
       RABBITMQ_DEFAULT_USER: ${RABBIT_USER:-admin}
       RABBITMQ_DEFAULT_PASS: ${RABBIT_PASSWORD:-admin123}
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      # R-36: 绑定回环 —— RabbitMQ 管理端(15672)可读到含患者姓名的消息体
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "ping"]
       interval: 10s
