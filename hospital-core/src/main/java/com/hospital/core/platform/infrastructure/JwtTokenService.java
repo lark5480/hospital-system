@@ -131,6 +131,9 @@ public class JwtTokenService {
                 .subject(username)
                 .claim("roles", roles)
                 .claim("authorities", authorities)
+                // R-34: 毫秒级签发时间。标准 iat 只有秒级精度,不足以区分
+                // "改密前的旧 token" 与 "改密后同一秒内重新登录的新 token"。
+                .claim("iatMs", now)
                 .issuedAt(new Date(now))
                 .expiration(new Date(now + ttlMillis))
                 .signWith(signingKey)

@@ -18,6 +18,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.Date;
 import java.util.List;
 
 /**
@@ -42,7 +43,8 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             if (claims != null) {
                 String username = jwtTokenService.usernameOf(claims);
                 // R-34: 该 token 签发于"改密 / 重置密码 / 登出"之前 → 失效,要求重新登录
-                if (tokenRevocationService.isRevoked(username, claims.getIssuedAt())) {
+                // 用毫秒级 iatMs(标准 iat 只有秒级精度,不足以区分同秒内的新旧 token)
+                if (tokenRevocationService.isRevoked(username, issuedAtMillisOf(claims))) {
                     SecurityContextHolder.clearContext();
                     response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
                     response.setContentType(MediaType.APPLICATION_JSON_VALUE);
@@ -60,6 +62,19 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             }
         }
         chain.doFilter(request, response);
+    }
+
+    /**
+     * R-34: 取 token 的毫秒级签发时间。优先自定义声明 iatMs;
+     * 老版本签发的 token 没有该声明时,退化为标准 iat(秒级,精度略差但不会误放行新 token)。
+     */
+    private static long issuedAtMillisOf(Claims claims) {
+        Object raw = claims.get("iatMs");
+        if (raw instanceof Number number) {
+            return number.longValue();
+        }
+        Date issuedAt = claims.getIssuedAt();
+        return issuedAt == null ? 0L : issuedAt.getTime();
     }
 
     /**

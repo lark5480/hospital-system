@@ -1,7 +1,6 @@
 package com.hospital.core.platform.security;
 
 import java.time.Duration;
-import java.util.Date;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -76,11 +75,18 @@ public class TokenRevocationService {
     /**
      * 该 token 是否已被吊销。由 {@code JwtAuthFilter} 每次请求调用一次。
      *
-     * @param username 登录名(手机号)
-     * @param issuedAt token 的签发时间({@code claims.getIssuedAt()});为 null 时按已吊销处理
+     * <p><b>为什么用毫秒签发时间而不是 {@code claims.getIssuedAt()}</b>:
+     * JWT 标准声明 {@code iat} 是<b>秒级</b>精度(毫秒被截断)。而"改密 → 立刻重新登录"
+     * 往往发生在同一秒内,若按秒比较,新 token 的 iat 会等于(或早于)吊销时刻,
+     * 导致新 token 被自己的吊销记录踢掉;反过来若放宽 1 秒,又会让同一秒内改密时的
+     * 旧 token 逃过吊销。两种折中都会产生偶发错误,因此签发时额外写入毫秒级
+     * {@code iatMs} 自定义声明,用它做精确排序。
+     *
+     * @param username       登录名(手机号)
+     * @param issuedAtMillis token 的毫秒级签发时间;取不到时传 0,按"已吊销"处理
      * @return true 表示该 token 签发于"改密 / 重置 / 登出"之前,应视为失效
      */
-    public boolean isRevoked(String username, Date issuedAt) {
+    public boolean isRevoked(String username, long issuedAtMillis) {
         if (username == null || username.isBlank()) {
             return false;
         }
@@ -91,7 +97,7 @@ public class TokenRevocationService {
             }
             long revokedAt = Long.parseLong(value.trim());
             // 签发时间早于(或等于)作废时间点 → 旧 token,拒绝
-            return issuedAt == null || issuedAt.getTime() <= revokedAt;
+            return issuedAtMillis <= revokedAt;
         } catch (NumberFormatException e) {
             // 值异常(如人工写入)时按"已吊销"处理更安全,但要留日志便于排查
             log.error("[R-34] 令牌吊销记录的值非法,按已吊销处理: user={}, value 解析失败", username, e);

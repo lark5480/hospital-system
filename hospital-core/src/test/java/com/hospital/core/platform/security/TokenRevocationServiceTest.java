@@ -9,7 +9,6 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.time.Duration;
-import java.util.Date;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -77,11 +76,14 @@ class TokenRevocationServiceTest {
         long revokedAt = 1_700_000_000_000L;
         when(valueOperations.get(KEY)).thenReturn(String.valueOf(revokedAt));
 
-        assertThat(service.isRevoked(PHONE, new Date(revokedAt - 10_000L)))
+        assertThat(service.isRevoked(PHONE, revokedAt - 10_000L))
                 .as("改密之前签发的 token 必须失效")
                 .isTrue();
-        assertThat(service.isRevoked(PHONE, new Date(revokedAt)))
-                .as("与吊销时刻同毫秒签发的 token 也按失效处理")
+        assertThat(service.isRevoked(PHONE, revokedAt - 1_000L))
+                .as("早于吊销时刻 1 秒签发的 token 必须失效")
+                .isTrue();
+        assertThat(service.isRevoked(PHONE, revokedAt - 1L))
+                .as("早于吊销时刻 1 毫秒签发的 token 也必须失效(毫秒级精度,不能因为同秒就放过)")
                 .isTrue();
     }
 
@@ -92,8 +94,11 @@ class TokenRevocationServiceTest {
         long revokedAt = 1_700_000_000_000L;
         when(valueOperations.get(KEY)).thenReturn(String.valueOf(revokedAt));
 
-        assertThat(service.isRevoked(PHONE, new Date(revokedAt + 5_000L)))
+        assertThat(service.isRevoked(PHONE, revokedAt + 5_000L))
                 .as("管理员重置密码后,用户重新登录签发的 token 不能被误判为失效")
+                .isFalse();
+        assertThat(service.isRevoked(PHONE, revokedAt + 1L))
+                .as("吊销后哪怕只晚 1 毫秒签发的 token 也属于新 token")
                 .isFalse();
     }
 
@@ -103,7 +108,7 @@ class TokenRevocationServiceTest {
         when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
         when(valueOperations.get(KEY)).thenReturn(null);
 
-        assertThat(service.isRevoked(PHONE, new Date())).isFalse();
+        assertThat(service.isRevoked(PHONE, System.currentTimeMillis())).isFalse();
     }
 
     @Test
@@ -112,7 +117,7 @@ class TokenRevocationServiceTest {
         when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
         when(valueOperations.get(KEY)).thenThrow(new RuntimeException("redis down"));
 
-        assertThat(service.isRevoked(PHONE, new Date()))
+        assertThat(service.isRevoked(PHONE, System.currentTimeMillis()))
                 .as("默认 fail-closed,Redis 故障时拒绝请求")
                 .isTrue();
     }
@@ -124,6 +129,6 @@ class TokenRevocationServiceTest {
         service.revokeUser("   ");
 
         verify(valueOperations, never()).set(anyString(), anyString(), any(Duration.class));
-        assertThat(service.isRevoked(null, new Date())).isFalse();
+        assertThat(service.isRevoked(null, System.currentTimeMillis())).isFalse();
     }
 }
