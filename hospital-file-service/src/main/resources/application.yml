@@ -16,7 +16,7 @@ minio:
   secret-key: ${MINIO_SECRET_KEY:minioadmin}
   bucket: hospital
 
-# R-03: 内部调用令牌(core / gateway → file-service)。
+# R-03: 内部调用令牌(core → file-service;R-62 起网关不再持有也不再代发该令牌)。
 # 生产必须注入环境变量 FILE_INTERNAL_TOKEN(如 openssl rand -base64 32);
 # 为空时 InternalTokenFilter 放行并打印 WARN(保证本地零配置可跑),生产严禁留空。
 file:

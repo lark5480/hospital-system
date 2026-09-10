@@ -89,6 +89,9 @@ public class DispatchSseController {
     @Operation(summary = "订阅看板数据变更推送")
     @GetMapping(value = "/subscribe", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     // R-13: SSE 为长连接资源，必须登录后才允许建立，防止匿名连接耗尽资源（core 已开启 @EnableMethodSecurity）
+    // R-34: 认证来源已从"URL 上的长期 JWT"改为"短期 ticket"——前端先 POST /api/core/sse/ticket
+    //       取票，再由 SseTicketAuthFilter 解析 ?ticket= 注入 Authentication，因此这里保持
+    //       isAuthenticated() 不变即可；本 Controller 不再从 query 读取任何令牌。
     @PreAuthorize("isAuthenticated()")
     public SseEmitter subscribe(
             @Parameter(description = "工位名称，可选；不传则接收全部工位事件")

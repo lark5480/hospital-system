@@ -31,9 +31,10 @@ import lombok.extern.slf4j.Slf4j;
 /**
  * 通知服务 REST + SSE 端点。
  *
- * <p>TODO(P1): 鉴权缺失 —— 本服务当前 SecurityConfig 为 anyRequest().permitAll()，
- * 且没有 JWT 基础设施，因此这里没有加 @PreAuthorize（加了会全量 401，前端 notifySSE.ts 直连会全部失效）。
- * 生产必须补齐：接入与 core 相同的 JWT 验签，或由网关统一鉴权，并在网络层隔离 8102 端口。
+ * <p>R-11 鉴权（见 SecurityConfig）:本服务不再 permitAll。SSE 订阅端点 {@code /api/notify/subscribe}
+ * 只接受 hospital-core 签发的短期 ticket（{@code scope=sse}）并要求持有任一员工权限,
+ * 授权在 SecurityConfig 的路径级规则中统一配置,故此处<b>刻意不再</b>重复加 @PreAuthorize（避免两处口径漂移）。
+ * REST 查询端点要求已认证。是否启用严格鉴权取决于是否配置 APP_JWT_SECRET（见 SecurityConfig 三档行为）。
  *
  * <p>R-13 止血改造（针对匿名可无限开连接的资源耗尽型 DoS）：
  * <ul>
@@ -109,7 +110,8 @@ public class NotificationController {
         );
     }
 
-    // TODO(P1): 待本服务接入 JWT 后补 @PreAuthorize("isAuthenticated()")
+    // R-11: 订阅端的鉴权（ticket + 员工权限）由 SecurityConfig 的 SSE 订阅链路径级规则施加,
+    // 未带合法 ticket 时请求根本进不到这里（401/403）。
     @GetMapping(value = "/subscribe", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter subscribe() {
         // R-13: 连接上限保护，防止匿名无限开连接耗尽资源

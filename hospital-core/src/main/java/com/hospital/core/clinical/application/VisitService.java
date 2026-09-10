@@ -95,26 +95,27 @@ public class VisitService {
 
         // R-05: 金额统一走 calcAmount 校验(见 R-06)。
         // R-21: 原实现 N 条医嘱 = N 次 order insert + N 次 charge insert,共 2N 次数据库往返。
-        //   现把 charge 批量化(N 次 → 1 次),orders 仍保持逐条,原因见下方 TODO(P3 R-21)。
+        //   现把医嘱与收费<b>双双批量化</b>:各用 1 条 "INSERT ... VALUES (...),(...)",整体从 2N 次降到 2 次。
         BigDecimal total = BigDecimal.ZERO;
-        // R-21: 收集待插入的 charge,循环结束后一次性批量落库
-        List<Charge> chargesToInsert = new ArrayList<>(orders.size());
+        // R-21 第一步:先装配全部医嘱(回填 visitId/status/amount)并累计金额,再一次性批量插入。
+        //   批量插入通过 @Options(useGeneratedKeys) 把自增主键按序回填到每个 Order(见 OrderMapper.insertBatch),
+        //   因此下方构造 charge.order_id 时,每个 order.getId() 已可信 —— 这正是"键回填"的落点。
         for (Order order : orders) {
             order.setVisitId(visit.getId());
             order.setStatus("CREATED");
             // R-06: 统一金额计算(校验 + 两位小数),避免 NPE / 负额结算 / scale 漂移
             order.setAmount(calcAmount(order.getUnitPrice(), order.getQuantity()));
+            total = total.add(order.getAmount());
+        }
+        // R-21: 单条 INSERT ... VALUES (...),(...) 批量写入全部医嘱(<foreach> 面对空集合会拼出非法 SQL,故判空)。
+        if (!orders.isEmpty()) {
+            orderMapper.insertBatch(orders);
+        }
 
-            // R-21: 医嘱仍需逐条 insert —— charge.order_id 依赖 order 的自增主键回填。
-            //   一次 "INSERT ... VALUES (...),(...) RETURNING id" 无法可靠保证返回顺序与入参一致
-            //   (PostgreSQL 未承诺 RETURNING 的排序),且 MyBatis 的 @Insert 只能返回受影响行数、
-            //   无法直接以 List<Long> 接收多个自增 id(需自定义 ResultHandler / KeyGenerator),
-            //   复杂度与风险不匹配,故 orders 本期不做批量化。
-            // TODO(P3 R-21): 若后续启用 PostgreSQL JDBC 的 reWriteBatchedInserts=true,
-            //   可结合 MyBatis-Plus saveBatch 或 ExecutorType.BATCH 让 orders 也走真正的批量写;
-            //   届时需保证 charge.order_id 与 order 的顺序一一对应。
-            orderMapper.insert(order);
-
+        // R-21 第二步:医嘱主键回填完成后,再按 order.getId() 装配收费并一次性批量插入。
+        // R-21: 收集待插入的 charge,循环结束后一次性批量落库
+        List<Charge> chargesToInsert = new ArrayList<>(orders.size());
+        for (Order order : orders) {
             Charge charge = new Charge();
             charge.setVisitId(visit.getId());
             charge.setOrderId(order.getId());
@@ -122,8 +123,6 @@ public class VisitService {
             charge.setAmount(order.getAmount());
             charge.setPayStatus("UNPAID");
             chargesToInsert.add(charge);
-
-            total = total.add(order.getAmount());
         }
         // R-21: 单条 INSERT ... VALUES (...),(...) 批量写入全部 charge(空集合会拼出非法 SQL,故判空)。
         // 返回内容与金额口径不变:下方仍按 visitId 回查 charge,行序与金额汇总与原实现一致。

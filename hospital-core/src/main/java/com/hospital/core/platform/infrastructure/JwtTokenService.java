@@ -39,6 +39,16 @@ public class JwtTokenService {
     /** R-01: HS256 要求密钥 ≥ 256 bit(32 字节)。 */
     private static final int MIN_SECRET_BYTES = 32;
 
+    /**
+     * R-34: SSE 订阅凭证(ticket)的固定有效期 —— 60 秒。
+     * <p>刻意<b>不复用</b> {@code app.jwt.ttl}:ticket 要放进 URL query,
+     * 一旦泄漏必须"几乎立刻"失效,否则与直接传长期 JWT 没有区别。
+     */
+    public static final long SSE_TICKET_TTL_MILLIS = 60_000L;
+
+    /** R-34: SSE ticket 的 scope 声明值;普通 token 不带该声明。 */
+    public static final String SSE_TICKET_SCOPE = "sse";
+
     /** R-01: 已知弱密钥 / 占位串黑名单(全部小写比对)。 */
     private static final Set<String> WEAK_SECRETS = Set.of(
             "hospital-system-dev-secret-key-must-be-at-least-32-bytes-long",
@@ -138,6 +148,57 @@ public class JwtTokenService {
                 .expiration(new Date(now + ttlMillis))
                 .signWith(signingKey)
                 .compact();
+    }
+
+    /**
+     * R-34: 签发<b>短期 SSE 订阅凭证</b>(ticket)。
+     *
+     * <p>背景:浏览器原生 {@code EventSource} 无法自定义请求头,SSE 订阅只能把凭证放在
+     * URL query 上携带。若直接塞一个有效期 4 小时的完整 JWT,会进入浏览器历史、
+     * 网关 access log 与 Referer,泄漏面极大。ticket 通过两点把风险压到最低:
+     * <ol>
+     *   <li>有效期固定 60 秒(见 {@link #SSE_TICKET_TTL_MILLIS});</li>
+     *   <li>带 {@code scope=sse} 声明,{@link JwtAuthFilter} 会拒绝把它当普通令牌用,
+     *       因此即便泄漏也无法换取全量 API 访问。</li>
+     * </ol>
+     *
+     * <p>声明与普通 token 保持一致(sub / roles / authorities / iatMs),
+     * 便于下游复用同一套 {@link #parse}/{@link #authoritiesOf} 解析方法。
+     * 特别注意<b>保留 {@code iatMs}</b>:否则 {@code TokenRevocationService} 的吊销判断
+     * 会因取不到毫秒级签发时间而误伤(见 JwtAuthFilter 中的吊销检查)。
+     *
+     * @param username    登录名(手机号)
+     * @param roles       岗位列表;SSE 授权只看 authorities,这里通常传空即可,无需查库
+     * @param authorities 权限串列表
+     */
+    public String issueSseTicket(String username, List<String> roles, List<String> authorities) {
+        long now = System.currentTimeMillis();
+        return Jwts.builder()
+                .id(UUID.randomUUID().toString())
+                .subject(username)
+                // R-34: 结构与普通 token 对齐,便于复用 authoritiesOf / rolesOf
+                .claim("roles", roles)
+                .claim("authorities", authorities)
+                // R-34: 必须保留 iatMs,否则会被令牌吊销逻辑误判为"签发于吊销前"
+                .claim("iatMs", now)
+                // R-34: 关键声明 —— 标记为仅限 SSE 使用的短期凭证
+                .claim("scope", SSE_TICKET_SCOPE)
+                .issuedAt(new Date(now))
+                // R-34: 固定 60 秒,不使用 app.jwt.ttl
+                .expiration(new Date(now + SSE_TICKET_TTL_MILLIS))
+                .signWith(signingKey)
+                .compact();
+    }
+
+    /**
+     * R-34: 该凭证是否为 SSE ticket(依据 {@code scope} 声明)。
+     * 普通 token 不带 {@code scope},返回 false。
+     */
+    public boolean isSseTicket(Claims claims) {
+        if (claims == null) {
+            return false;
+        }
+        return SSE_TICKET_SCOPE.equals(claims.get("scope"));
     }
 
     /** R-34: token 有效期(毫秒),供令牌吊销记录设置与 token 对齐的 TTL。 */

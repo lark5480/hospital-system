@@ -5,7 +5,7 @@
 - **参与 Agent**：SECURITY（安全）、PERFORMANCE（性能）、TESTING（测试质量）
 - **流程**：第 1 轮三方独立审查 → 第 2 轮交叉质询（反驳 / 降级 / 升级 / 补充 / 自我修正 / 预判辩护）→ 第 3 轮主席收敛
 - **产出**：61 条问题（6 Critical / 22 High / 26 Medium / 7 Low），含 8 条质询后新增、9 条质询后改级
-- **实施状态（2026-09-10 更新）**：P0 + P1 + P2 已全部落盘；复核中发现的 2 条审核漏项（R-62 Critical / R-63 High）亦已修复 —— 合计 63 条：**57 项已修复、1 项已缓解、5 项部分修复**。详见下方「实施状态总览」
+- **实施状态（2026-09-10 更新）**：P0 + P1 + P2 已全部落盘；复核中发现的 2 条审核漏项（R-62 Critical / R-63 High）已修复；原先 5 条「部分修复」（R-11 / R-21 / R-33 / R-34 / R-47）亦已收尾 —— 合计 63 条：**62 项已修复、1 项已缓解、0 项部分修复**。详见下方「实施状态总览」
 - **定级标准**：
   - **Critical**：可直接导致批量敏感数据泄露 / 权限完全失守，或线上必然不可用
   - **High**：需要低门槛前置条件即可造成实质损害，或数据量到 10 万级必然劣化到不可用
@@ -43,6 +43,11 @@
 | R-61 | 前端零测试：引入 vitest + jsdom + `@vue/test-utils`，`vitest.config.ts` **复用 `vite.config.ts` 的插件**（否则按需引入类问题在测试里永远暴露不出来），19 个用例覆盖 polling / auth 存储与权限 / 密码校验 / element-plus 解析 | `package.json`、新增 `vitest.config.ts` 与 4 个 spec |
 | R-62 | **文件服务收口到 core 代理**（Critical，复核漏项）：撤除网关 `hospital-file` 路由与内部令牌配置；新增 `FileProxyController`（`/api/core/files` 的 upload / list / download）在此完成归属判定 —— 患者强制覆盖为本人 patientId、员工下载不传 patientId 返回 403；`FileServiceClient` 补 `list` / `upload`；前端改走 `/core/files` 并补归属参数。守护测试为**反向断言**（路由不得复活 + 令牌不得回流网关） | 网关 `application.yml`、新增 `platform/api/FileProxyController`、`FileServiceClient`、file-service `FileController`、`api/file.ts`、`FileView.vue`、新增 `FileProxyControllerTest` / `GatewayInternalTokenAbsenceTest` |
 | R-63 | `VisitService.listExams()` 的逐行 `selectById` 改为 `selectBatchIds` + 分组，查询数 `1+N` → `1+1`（High，复核漏项：与 R-19 同类但位置不在 R-19 覆盖范围内） | `VisitService` |
+| R-11 | **通知服务从 `permitAll` 收紧到「ticket + 员工权限」**。① `/api/notify/subscribe` 只接受 core 签发的 60s `scope=sse` ticket，且需**任一员工权限**（仅 `patient:booking` 的患者 → 403）；② `/api/notify/events*` 同权限 —— 只收紧订阅不够，患者换个入口照样能读**全院级**通知；③ REST 链显式拒绝 `scope=sse`，与 core 的 `JwtAuthFilter` 同一不变式。三档密钥行为对齐仓库既有约定（prod 未配置 `APP_JWT_SECRET` → 启动失败；非 prod → 放行 + WARN；已配置 → 严格校验）。前端 `stores/notification.ts` 增加员工门禁：患者路由同样挂在 `MainLayout` 下，若不拦截则每次进页面都 403 并触发 SSE 退避重连 | notification `SecurityConfig`、新增 `QueryTicketBearerFilter`、`application.yml`、`notifySSE.ts`、`stores/notification.ts`、新增 `NotificationRestSecurityTest` |
+| R-21 | **医嘱也批量化**：`OrderMapper.insertBatch` 用单条多值 `INSERT ... VALUES(),()` + `@Options(useGeneratedKeys = true, keyProperty = "id")`，由 MyBatis `Jdbc3KeyGenerator` 按结果集行序把自增主键回填到每个 `Order`；`createWithOrders` 的往返数由 `2N` 降到 **2**。**不需要** `reWriteBatchedInserts`（走的是单条多值 INSERT，不是 JDBC batch）。原「放弃」注释已按事实删除 | `OrderMapper`、`VisitService`、新增 `VisitServiceCreateOrdersBatchTest`（真实 PG + 6 条医嘱，断言 id↔itemName 无错位、charge.order_id 全部命中） |
+| R-33 | **Swagger 按 profile 收口**：非 prod 保持匿名放行（本地开发 / 演示可用），prod 下 `/swagger-ui/**`、`/swagger-ui.html`、`/api-docs/**`、`/v3/api-docs/**` 从 `permitAll` 移除并 `log.warn`。matcher 条件化拼接，未复制两份 `authorizeHttpRequests` | `SecurityConfig`、新增 `SecurityConfigSwaggerAccessTest` |
+| R-34 | **SSE 不再把长期 JWT 放进 URL**：删除 `JwtAuthFilter` 的 `?token=` 回退；新增 `POST /api/core/sse/ticket`（Bearer 换取 **60 秒、`scope=sse`** 的 ticket）与 `SseTicketAuthFilter`（校验 `?ticket=`）；`JwtAuthFilter` 显式**拒绝** ticket 当普通令牌（401），使"URL 上的凭证"无法换取全量 API 访问。前端新增 `api/sse.ts`，两个 SSE 客户端改为"取票 + 主动退避重连（5s 起 / ×2 / 上限 30s）"—— 原生的自动重连会复用已过期 ticket，必然失败 | `JwtTokenService`、`JwtAuthFilter`、`SecurityConfig`、新增 `SseTicketController` / `SseTicketAuthFilter`、新增 `api/sse.ts`、`dispatchSSE.ts`、`notifySSE.ts` |
+| R-47 | 补「号源生成 / 过期清理 / 状态机 / 异常边界」用例：`ensureSlotsExist` 去重补缺 + `days=0` / `capacity=0` 边界；`cleanupExpiredAppointments` 只清过期 BOOKED、不动已完成/已取消/未来，且幂等（含真实 PG 集成用例）；`onAppointmentStatus` 合法推进与防回退 | 新增 `BookingServiceSlotLifecycleTest`（16 例）、`BookingCleanupExpiredIntegrationTest`（2 例，真实 PG） |
 | R-15 | 启动期全量重建：新增 `platform.meta` 水位表；`initAll()` 加版本守卫 + 主键游标分批；`migrateUsers()` 先 `count(user_id IS NULL)` 短路。实测启动步进总耗时 **36ms** | `DataInitializer`、`VisitReadModelService`、`schema.sql` |
 | R-16 | 读模型写放大：新增一条聚合 SQL（`VisitReadModelMapper.selectAggregate`）取代 2 次全量 selectList；名称解析走 `NameCache`；`addOrder/editOrder/cancelOrder` 复用刷新结果，不再重复 `getDetail()`。**异步刷新主动放弃**（会破坏 `VisitReadModelTest` 的事务可见性），已在 javadoc 写明 | `VisitReadModelService`、`VisitReadModelMapper`、`VisitService` |
 | R-19 | 名称解析 N+1：新增 `NameCache`（TTL 5min / 上限 5000 / 惰性清理），lab / pharmacy / report 列表改为批量解析（一次 `WHERE id IN`），出参结构不变 | 新增 `platform/support/NameCache`、`LabService`、`PrescriptionService`、`ReportService` |
@@ -67,18 +72,12 @@
 | R-53 | 补 `finishVisit(force)` 退款与 `pay` 事件断言。**实测发现与用例预期不符**：存在 UNPAID 费用时 `finishVisit` 在 force 分支之前就抛 `IllegalStateException("存在未缴费用…")`，既不删除也未缴费、不作废医嘱；已按实际行为断言并注释说明（未改主源码） | `VisitServiceTest` |
 | R-54 | `MenuServiceTest` 污染 `SecurityContextHolder`：补 `@BeforeEach/@AfterEach` 清理。**实测纠正**：注解声称「匿名返回完整菜单」并不成立（匿名时 authority 为空，仍会按 `menu_authority` 裁剪），已改为固化真实语义的用例 | `MenuServiceTest` |
 | R-58 | 启动期破坏性 DELETE：`ensureStaffPhoneUnique()` 改为「先探测冲突 → `log.error` 打印冲突 phone 清单并跳过建约束」，**不再静默删除员工档案**（选择"跳过"而非"中止启动"：该 UNIQUE 是额外加固而非硬依赖，不应把局部数据问题放大成全站不可用） | `DataInitializer` |
-| 决策 4B | **由网关注入 `X-Internal-Token`**（`AddRequestHeader`）——令牌只存在于服务端，浏览器永不接触，前端零改动；file-service 在 prod 未配置令牌即拒绝启动（与 R-01 对称） | gateway `application.yml`、`InternalTokenFilter`、file-service `SecurityConfig` |
+| 决策 4B | **由网关注入 `X-Internal-Token`**（`AddRequestHeader`）——令牌只存在于服务端，浏览器永不接触，前端零改动；file-service 在 prod 未配置令牌即拒绝启动（与 R-01 对称）。<br>**已被 R-62 取代**：网关默认 profile 即 `permitAll`，它代发的令牌对匿名调用者同样生效，不构成边界；现改为撤除该路由、文件访问一律经 core 的 `/api/core/files` 代理 | gateway `application.yml`、`InternalTokenFilter`、file-service `SecurityConfig` |
 | 决策 5 | **改密/重置即吊销该用户全部 token**（新增 `TokenRevocationService`，Redis 用户维度，TTL 与 token 对齐）；JWT TTL 8h→4h；`issue()` 加 jti 为单设备登出预留 | `TokenRevocationService`(新)、`JwtAuthFilter`、`JwtTokenService`、`PasswordController`、`ChangePasswordView.vue` |
 
 ### 部分修复
 
-| 编号 | 已完成 | 未完成 |
-|---|---|---|
-| R-11 | core `SecurityConfig` 收口；file-service 加内部令牌 | **notification-service 仍 `permitAll()`**（无 JWT 基础设施，加强制鉴权会打断前端 SSE），仅加注释排 P1 |
-| R-21 | 收费记录（charge）改为单条批量 INSERT，N 次往返降为 1 次 | 医嘱（orders）保持逐条：`charge.order_id` 需要医嘱的自增主键回填，而 `INSERT ... VALUES(),() RETURNING id` 无法通过 MyBatis 可靠按序取回多 id，收益不抵风险。已留 `TODO(P3)`（`reWriteBatchedInserts=true` + `ExecutorType.BATCH`） |
-| R-33 | `/actuator/**` 移出 permitAll | Swagger / OpenAPI 仍放行（开发依赖，生产关闭未做） |
-| R-34 | 改密 / 重置吊销已实现 | `?token=` query 回退未动（SSE 依赖 `EventSource`） |
-| R-47 | `book()` 的并发与幂等已补（含真实 PG 并发用例） | 号源生成 / 过期清理 / 状态机用例仍缺 |
+> **已清空（2026-09-10）**：原先的 5 条（R-11 / R-21 / R-33 / R-34 / R-47）已全部收尾，实现要点见「实施状态总览」新增条目。
 
 ### 附带修复（原报告未列项）
 
@@ -112,16 +111,17 @@
     | 守护测试 | `GatewayRouteGuardTest` 改为**反向断言**（路由 id / `/api/files` 谓词 / 8103 URI 都不得存在）；原 `GatewayDefaultTokenContextTest` 的契约已被反转，重写为 `GatewayInternalTokenAbsenceTest`（网关不得持有令牌配置、不得代发该头）；新增 `FileProxyControllerTest` 10 个用例锁定归属覆盖、403 语义与错误翻译 |
   - **修复后的边界**：file-service 只在内网可达；对外唯一入口是 core 的 `/api/core/files`，受 JWT 鉴权链约束。注意 `list` 仍支持全量语义（管理台需要），这依赖"内网可达"这一前提 —— 若将来暴露 8103，必须先给 file-service 补真正的鉴权。
 - **R-63【High】`VisitService.listExams()` 循环内逐行 `visitMapper.selectById`**：先全量加载 EXAM 医嘱，再对每条回查就诊/患者/医生。属 R-19 同类 N+1，但位置不在 R-19 列的三个类里，故未被覆盖。已改为一次 `selectBatchIds` + 分组，查询次数由 `1+N` 降为 `1+1`。
-- **R-21 医嘱批量写入**（部分完成）：收费记录已批量化，医嘱因需回填自增主键给 `charge.order_id` 而保持逐条，已留 `TODO(P3)`
 - **R-39 暴露的类型债**：开启按需引入后若生成 `components.d.ts`，`vue-tsc` 会立刻暴露 **34 个既有类型问题**（`el-table` 作用域插槽的 row 被推断为 `DefaultRow`、`el-tag :type` 传入了含空串的联合类型）。本轮为守住"type-check 0 错误"基线关闭了 dts 生成；修完这 34 处即可打开，换取组件级类型安全
 - **R-56 的行为变化**：改 sessionStorage 后**新开标签页不再共享登录态**（单标签刷新仍免登）。这是收窄 XSS 窗口的代价，两全需 httpOnly Cookie + CSRF（P3）
 - **R-60 的运维项**：容器 / CI（ubuntu）无中文字体，PDF 中文会走降级（方框）。建议镜像挂载字体或设置 `PDF_FONT_PATH`
-- **R-47 未覆盖部分**：`BookingService` 的号源生成 / 过期清理 / 状态机用例仍缺（只补了并发与幂等）
+- **本地零配置下的 SSE 鉴权取舍**：core 非 prod 未配置 `APP_JWT_SECRET` 时会生成**随机**密钥，notification-service 无法校验 ticket → 故 notification 非 prod 选择"放行 + WARN"而非 fail-closed（否则本地零配置联调必坏）。本地若要完整验证鉴权链路，请在两个服务的环境变量里注入同一把 `APP_JWT_SECRET`
+- **`BookingService` 的两处功能缺口**（非本次范围，属产品决策）：① `book()` 不校验患者档案存在性（`patientName` 可能为 null）；② 无患者主动取消 / 改期能力（状态机只有 `onAppointmentStatus` 与过期清理）
 - **决策 1 结论**：不开放 `/visits/page`、`/reports/list`、`/reports/type` 给患者，也不新建 `/mine`。C 端能力一律走 `PatientController` 下自带归属校验的专用端点（`/api/patient/reports` 等），已可满足现有 `patient/*` 全部页面
 
 ### 新增运维依赖（部署清单必须同步）
 
-1. `APP_JWT_SECRET`：≥32 字节随机串，未注入时 prod 启动失败
+1. `APP_JWT_SECRET`：≥32 字节随机串，**hospital-core 与 hospital-notification-service 必须为同一把**（后者用它校验 SSE ticket）。
+   未注入时：core 非 prod 生成随机密钥并告警、prod 启动失败；notification 非 prod 放行 + WARN、prod 启动失败
 2. `FILE_INTERNAL_TOKEN`：**只在 core 与 file-service 之间**，两边必须一致；未注入时 file-service 在 prod 下启动失败
    - **R-62 后网关不再参与**：原先网关有 `hospital-file` 路由并代发该令牌，现已撤除（网关默认 profile 即 `permitAll`，它代发的令牌对匿名调用者同样生效，不构成边界）。
      随之失效的旧约束（网关侧 `AddRequestHeader` 的 value 不得为空，否则启动失败）已不存在，
@@ -217,8 +217,8 @@ List<Charge> unpaid = chargeMapper.selectList(null).stream()      // 无 WHERE
 
 ## 三、High 问题（22 条）
 
-> **已修复（34 项）**：R-07、R-08、R-09、R-10、R-12、R-13、R-14、R-15、R-16、R-17、R-18、R-19、R-20、R-22、R-23、R-24、R-25、R-26、R-27、R-28、R-37、R-38、R-41、R-42、R-43、R-45、R-46、R-48、R-49、R-50、R-51、R-52、R-53、R-54
-> **部分修复**：R-11（notification 仍 permitAll）、R-21（收费记录已批量，医嘱因需回填自增主键保持逐条，留 TODO P3）、R-47（缺号源生成/清理/状态机用例，仅补了并发与幂等）
+> **已修复（37 项）**：R-07、R-08、R-09、R-10、R-11、R-12、R-13、R-14、R-15、R-16、R-17、R-18、R-19、R-20、R-21、R-22、R-23、R-24、R-25、R-26、R-27、R-28、R-37、R-38、R-41、R-42、R-43、R-45、R-46、R-47、R-48、R-49、R-50、R-51、R-52、R-53、R-54
+> **部分修复**：无
 > **未启动**：无
 
 | 编号 | 标题 | 维度 | 位置 | 备注 |
@@ -250,9 +250,9 @@ List<Charge> unpaid = chargeMapper.selectList(null).stream()      // 无 WHERE
 
 ## 四、Medium 问题（26 条）
 
-> **已修复（11 项）**：R-30（上传正则 + 20MB + 禁止覆盖）、R-31（审计失败也留痕）、R-32（错误信息不再直出）、R-35（CORS 不再通配）、R-36（中间件端口收回环 + `.env.example`）、R-39（element-plus 按需引入 + 解析回归测试）、R-40（轮询加页面可见性感知）、R-44（审计写入移出业务线程，失败降级为同步）、R-55（CI 前端门禁）
+> **已修复（13 项）**：R-30（上传正则 + 20MB + 禁止覆盖）、R-31（审计失败也留痕）、R-32（错误信息不再直出）、R-33（Swagger 按 profile 收口：prod 不再匿名放行）、R-34（`?token=` 回退删除，SSE 改用 60s `scope=sse` 短期 ticket）、R-35（CORS 不再通配）、R-36（中间件端口收回环 + `.env.example`）、R-39（element-plus 按需引入 + 解析回归测试）、R-40（轮询加页面可见性感知）、R-44（审计写入移出业务线程，失败降级为同步）、R-55（CI 前端门禁）
 > **已缓解**：R-29（全表扫描与长事务已由 R-04/R-05 治理，锁等待放大面显著收窄；未单独做压测验证）
-> **部分修复**：R-33（`/actuator` 已收口，Swagger 仍放行）、R-34（改密吊销已实现，`?token=` query 回退未动）
+> **部分修复**：无
 > **未启动**：无
 
 | 编号 | 标题 | 维度 | 位置 |

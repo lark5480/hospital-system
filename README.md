@@ -72,9 +72,12 @@ browser ──► hospital-web :5173
 ```
 
 - **自管 JWT**:后端 `JwtTokenService` 签发/解析(HS256),无外部 IdP 依赖,本地零配置可跑。
-- **登录**:`POST /api/auth/login?phone=xxx&password=xxx` → 返回 token + roles + authorities(角色权限查库)。
+- **登录**:`POST /api/auth/login`,JSON body `{phone, password}` → 返回 token + roles + authorities + `mustChangePassword`(角色权限查库)。
+  > R-12:密码**不再经 URL query 传递**(原先 `?phone=&password=` 会进入浏览器历史与网关 access log)。连续失败 5 次锁定 15 分钟;密码为默认口令时前端强制改密(R-10)。
 - **RBAC**:七权(`visit:entry`/`visit:audit`/`order:execute`/`pharmacy:dispense`/`charge:pay`/`system:admin`/`patient:booking`),角色↔权限映射入库(`platform.role` + `platform.role_authority`),管理员后台可配。
 - **菜单过滤**:后端 `MenuService` 从 `platform.menu` + `platform.menu_authority` 表加载菜单树,按当前用户 authorities 动态裁剪。
+- **SSE 实时推送**:浏览器原生 `EventSource` 无法自定义请求头,因此**不把长期 JWT 放进 URL**;改为先 `POST /api/core/sse/ticket`(走 Bearer)换取一个 **60 秒有效、`scope=sse` 的短期 ticket**,再以 `?ticket=` 订阅(R-34)。该 ticket **无法用于普通 API** —— core 与 notification-service 两侧都显式拒绝 `scope=sse`。
+- **文件访问**:一律经 core 的 `/api/core/files` 代理完成鉴权与归属校验,file-service 只在内网可达(R-62)。
 - **未来接外部 IdP**:只需替换 login 环节(校验外部 token → 换签自有 JWT),过滤器与 SecurityConfig 不动。
 
 ## 前端工程结构
