@@ -69,9 +69,18 @@ spring:
 
 # R-03: 调用 file-service 的内部调用令牌,须与 file-service 侧配置同一把。
 # 生产必须通过环境变量 FILE_INTERNAL_TOKEN 注入;留空时 file-service 在 prod profile 下会拒绝启动。
+#
+# 注意:默认值必须是一个非空串,不能写成 ${FILE_INTERNAL_TOKEN:}。
+# AddRequestHeader 绑定的是 NameValueConfig,其 value 不允许为空 —— 占位符解析成空串时
+# 网关会在启动阶段直接失败(Binding to target ... Property: .value Reason: 不能为空)。
+# 未注入环境变量时这里发一个占位串:file-service 侧自身未配置令牌时本就放行,不影响本地开发;
+# 若 file-service 配了令牌而网关没配,请求会被 401 —— 这正是配置不一致时希望暴露的行为。
 file:
-  internal-token: ${FILE_INTERNAL_TOKEN:}
+  internal-token: ${FILE_INTERNAL_TOKEN:dev-no-token}
 
 logging:
+  # R-24: 由 debug 降为 info —— 网关是所有请求的入口,DEBUG 下每个请求都会打路由匹配日志,
+  # 既拖慢转发又把完整 URL(可能含 token / 患者 ID)写进日志。排障时用
+  # --logging.level.com.hospital=debug 临时打开。
   level:
-    com.hospital: debug
+    com.hospital: info
