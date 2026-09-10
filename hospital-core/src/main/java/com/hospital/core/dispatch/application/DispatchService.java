@@ -1,9 +1,7 @@
 package com.hospital.core.dispatch.application;
 
 import java.time.LocalDateTime;
-import java.util.Comparator;
 import java.util.List;
-import java.util.Map;
 
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
@@ -46,9 +44,6 @@ public class DispatchService {
     private final ReportService reportService;
     private final ApplicationEventPublisher eventPublisher;
     private final DispatchSseController sseController;
-
-    private static final Map<String, Integer> STATUS_ORDER = Map.of(
-            "PENDING", 0, "IN_PROGRESS", 1, "SKIPPED", 2, "DONE", 3);
 
     /**
      * 事件驱动入口:预约创建后(booking 事务提交),按项目顺序生成各 station 任务 + 看板投影。
@@ -185,17 +180,46 @@ public class DispatchService {
         return taskMapper.selectList(q);
     }
 
-    /** 看板读模型查询(按 station 过滤可选)。同 station 内:进行中/待检前置,再按 seq。 */
+    /**
+     * 看板读模型查询(按 station 过滤可选)。同 station 内:状态优先级
+     * (PENDING → IN_PROGRESS → SKIPPED),再按 seq。
+     *
+     * <p>R-37:两条改造,全部下推到 SQL,看板不再全量加载:
+     * <ol>
+     *   <li><b>状态过滤</b>:只保留 {@code PENDING / IN_PROGRESS / SKIPPED},剔除 {@code DONE}
+     *       行。原实现把整表(含全部历史 DONE 行,年增约 55 万)无过滤载入内存 —— DONE 才是
+     *       无界增长的元凶,故以状态白名单把它挡在 SQL 之外,这是本次优化的核心;</li>
+     *   <li><b>排序下推</b>:用 {@code CASE WHEN} 表达状态优先级(与旧 Java {@code STATUS_ORDER}
+     *       语义等价:PENDING=0 / IN_PROGRESS=1 / SKIPPED=2 / ELSE=3),再按 seq,
+     *       删除原 Java {@code rows.sort}。</li>
+     * </ol>
+     *
+     * <p><b>为什么不加"当日"时间过滤</b>:最初版本同时加了 {@code created_at >= 当日零点}。
+     * 但排队看板是演示/运营的核心页面,一旦当天没有新预约,看板会直接空白(历史未完成项也被滤掉),
+     * 属明显的体验回退;而"剔除 DONE"已经解决了 99% 的体积问题(未完成项数量天然有界)。
+     * 因此这里只按状态过滤,行为与原实现接近(原实现连 DONE 一起返回)。
+     *
+     * <p><b>行为变化(须前端知悉)</b>:返回结果<b>不再包含 DONE 行</b>(原实现包含)。
+     * 之所以<b>仍保留 SKIPPED</b>,是因为前端两处展示确实依赖该状态:
+     * 大屏 {@code ScreenView} 的「已过号(队尾)」列表、运营端 {@code DispatchView} 的「重新排队」按钮,
+     * 均按 {@code status === 'SKIPPED'} 渲染;若一并剔除会造成功能回退。DONE 没有任何 UI 动作依赖,
+     * 故按 R-37 意图剔除。
+     *
+     * <p>NULL/空 station 入参语义保持不变:不加 station 条件,返回全部工位结果。
+     *
+     * <p>TODO(P2 R-37):queue_board 仍会随预约持续增长,需按 {@code created_at} 定期归档或删除历史行
+     * (本任务按要求不新增定时任务,仅在此留痕)。
+     */
     public List<QueueBoard> board(String station) {
-        QueryWrapper<QueueBoard> q = new QueryWrapper<>();
+        QueryWrapper<QueueBoard> q = new QueryWrapper<QueueBoard>()
+                .in("status", "PENDING", "IN_PROGRESS", "SKIPPED");
         if (station != null && !station.isBlank()) {
             q.eq("station", station);
         }
-        q.orderByAsc("station", "seq");
-        List<QueueBoard> rows = boardMapper.selectList(q);
-        rows.sort(Comparator.comparingInt((QueueBoard r) ->
-                STATUS_ORDER.getOrDefault(r.getStatus(), 9)).thenComparing(QueueBoard::getSeq));
-        return rows;
+        q.orderByAsc("CASE WHEN status = 'PENDING' THEN 0 WHEN status = 'IN_PROGRESS' THEN 1 "
+                        + "WHEN status = 'SKIPPED' THEN 2 ELSE 3 END")
+                .orderByAsc("seq");
+        return boardMapper.selectList(q);
     }
 
     /**
@@ -207,31 +231,26 @@ public class DispatchService {
      */
     @Transactional
     public ExamTask callNext(String station) {
-        List<ExamTask> pending = taskMapper.selectList(new QueryWrapper<ExamTask>()
-                .eq("station", station)
-                .eq("status", "PENDING")
-                .orderByAsc("seq"));
-        for (ExamTask cand : pending) {
-            // 护栏1:跳过正在其他科室检查的患者
-            if (patientHasInProgress(cand.getPatientId())) continue;
-            // 护栏2:跳过顺序更靠前项目仍未完成的患者(遵循医生指定顺序)
-            if (cand.getSeq() > patientMinPendingSeq(cand.getPatientId())) continue;
-            cand.setStatus("IN_PROGRESS");
-            LocalDateTime calledAt = LocalDateTime.now();
-            cand.setStartedAt(calledAt);
-            taskMapper.updateById(cand);
-            syncBoard(cand);
-            // 发布叫号事件 → 通知服务驱动 C 端「叫号通知」(事务提交后由 AmqpBridge 异步发出)
-            eventPublisher.publishEvent(new PatientCalledEvent(
-                    cand.getId(), cand.getAppointmentId(), cand.getPatientId(),
-                    cand.getPatientName(), cand.getStation(), cand.getItemName(), calledAt));
-            // 回写预约单:该预约首个任务开始 = 到院(CHECKED_IN)
-            maybePublishCheckedIn(cand.getAppointmentId());
-            // SSE推送(R-13: 事务提交后再广播)
-            broadcastAfterCommit(new BoardUpdateEvent(station, cand.getId(), "callNext"));
-            return cand;
+        // R-38: 由"取全部 PENDING 再逐个回查"的 N+1(单 station 积压 200 人时约 401 次 SQL)
+        // 改为一条 SQL 取候选:两条护栏(患者级单活跃 + 医生指定顺序)已下推到 ExamTaskMapper.selectNextCandidate。
+        ExamTask cand = taskMapper.selectNextCandidate(station);
+        if (cand == null) {
+            return null;
         }
-        return null;
+        cand.setStatus("IN_PROGRESS");
+        LocalDateTime calledAt = LocalDateTime.now();
+        cand.setStartedAt(calledAt);
+        taskMapper.updateById(cand);
+        syncBoard(cand);
+        // 发布叫号事件 → 通知服务驱动 C 端「叫号通知」(事务提交后由 AmqpBridge 异步发出)
+        eventPublisher.publishEvent(new PatientCalledEvent(
+                cand.getId(), cand.getAppointmentId(), cand.getPatientId(),
+                cand.getPatientName(), cand.getStation(), cand.getItemName(), calledAt));
+        // 回写预约单:该预约首个任务开始 = 到院(CHECKED_IN)
+        maybePublishCheckedIn(cand.getAppointmentId());
+        // SSE推送(R-13: 事务提交后再广播)
+        broadcastAfterCommit(new BoardUpdateEvent(station, cand.getId(), "callNext"));
+        return cand;
     }
 
     /**
@@ -244,9 +263,9 @@ public class DispatchService {
         if (!"PENDING".equals(t.getStatus())) {
             throw new IllegalStateException("仅 PENDING 任务可过号重排");
         }
-        Integer maxSeq = taskMapper.selectList(new QueryWrapper<ExamTask>().eq("station", t.getStation()))
-                .stream().map(ExamTask::getSeq).max(Integer::compareTo).orElse(0);
-        t.setSeq(maxSeq + 1);
+        // R-38: 用 MAX(seq) 单条聚合替代"拉整个 station 再 stream().max()"的全量加载
+        Integer maxSeq = taskMapper.selectMaxSeq(t.getStation());
+        t.setSeq((maxSeq == null ? 0 : maxSeq) + 1);
         taskMapper.updateById(t);
         syncBoard(t);
         // SSE推送(R-13: 事务提交后再广播)
@@ -284,10 +303,10 @@ public class DispatchService {
         if (reportService.existsForAppointment(t.getAppointmentId())) {
             throw new IllegalStateException("该预约已出具报告,跳过项不可再重新排队,请另行预约补检");
         }
-        Integer maxSeq = taskMapper.selectList(new QueryWrapper<ExamTask>().eq("station", t.getStation()))
-                .stream().map(ExamTask::getSeq).max(Integer::compareTo).orElse(0);
+        // R-38: 用 MAX(seq) 单条聚合替代"拉整个 station 再 stream().max()"的全量加载
+        Integer maxSeq = taskMapper.selectMaxSeq(t.getStation());
         t.setStatus("PENDING");
-        t.setSeq(maxSeq + 1);
+        t.setSeq((maxSeq == null ? 0 : maxSeq) + 1);
         t.setStartedAt(null);
         taskMapper.updateById(t);
         syncBoard(t);
@@ -295,12 +314,11 @@ public class DispatchService {
         broadcastAfterCommit(new BoardUpdateEvent(t.getStation(), taskId, "requeue"));
     }
 
-    /** 活跃工位列表(存在 PENDING/IN_PROGRESS 任务的 station),供大屏页选择。 */
+    /** 活跃工位列表(存在未完成任务的 station),供大屏页选择。 */
     public List<String> listActiveStations() {
-        List<QueueBoard> rows = boardMapper.selectList(new QueryWrapper<QueueBoard>()
-                .select("distinct station")
-                .in("status", "PENDING", "IN_PROGRESS"));
-        return rows.stream().map(QueueBoard::getStation).distinct().toList();
+        // R-37: 下推为一条 SELECT DISTINCT station,替代原"select distinct station 拉全表再 Java distinct";
+        // 口径与 board() 完全一致(状态白名单,不加日期限制)。
+        return boardMapper.selectActiveStations();
     }
 
     private ExamTask requireTask(Long taskId) {
@@ -309,12 +327,6 @@ public class DispatchService {
             throw new IllegalArgumentException("任务不存在: " + taskId);
         }
         return t;
-    }
-
-    /** 护栏:同一患者不得同时在多个科室处于检查中(真实场景:一次只在一个科室)。 */
-    private boolean patientHasInProgress(Long patientId) {
-        return !taskMapper.selectList(new QueryWrapper<ExamTask>()
-                .eq("patient_id", patientId).eq("status", "IN_PROGRESS")).isEmpty();
     }
 
     /** 该患者所有待检项里的最小 seq(即医生指定顺序中最靠前的项目)。 */

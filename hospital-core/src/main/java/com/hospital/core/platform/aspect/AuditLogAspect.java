@@ -1,10 +1,13 @@
 package com.hospital.core.platform.aspect;
 
 import java.time.LocalDateTime;
+import java.util.concurrent.RejectedExecutionException;
 
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.core.task.TaskExecutor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -20,7 +23,6 @@ import com.hospital.core.platform.annotation.AuditLog;
 import com.hospital.core.platform.domain.Role;
 import com.hospital.core.platform.infrastructure.AuditLogMapper;
 
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -31,10 +33,18 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 @Aspect
 @Component
-@RequiredArgsConstructor
 public class AuditLogAspect {
 
     private final AuditLogMapper auditLogMapper;
+
+    /** R-44: 审计写入专用线程池(见 AsyncConfig#auditLogExecutor),异步执行避免审计 IO 拖慢业务线程。 */
+    private final TaskExecutor auditLogExecutor;
+
+    public AuditLogAspect(AuditLogMapper auditLogMapper,
+                          @Qualifier("auditLogExecutor") TaskExecutor auditLogExecutor) {
+        this.auditLogMapper = auditLogMapper;
+        this.auditLogExecutor = auditLogExecutor;
+    }
 
     /**
      * R-31: 审计写入必须用 try/finally 包裹 —— 原实现在 {@code jp.proceed()} 之后才写审计,
@@ -77,12 +87,40 @@ public class AuditLogAspect {
             entry.setDetail(detail.length() > 500 ? detail.substring(0, 500) : detail);
         }
         entry.setCreatedAt(LocalDateTime.now());
+        // R-44: 审计写入提交到专用线程池异步执行,避免审计 IO(磁盘/网络)拖慢业务响应。
+        // 关键约束:审计绝不能因异步而静默丢失 —— 执行器不可用、被拒绝,或任务内部异常时,
+        // 一律降级为同步写入,保证"操作发生即留痕";既有 try/finally 语义(R-31)保持不变。
+        submitAuditWrite(entry, auditLog.action());
+    }
+
+    /**
+     * R-44: 提交审计写入任务。任何无法异步执行的情况都降级为同步插入。
+     * 异步任务在自身的 try/catch 内吞掉异常并记 ERROR —— 异步异常不会再抛回业务线程。
+     */
+    private void submitAuditWrite(com.hospital.core.platform.domain.AuditLog entry, String action) {
+        if (auditLogExecutor == null) {
+            // 降级:执行器不可用(未装配)→ 同步写
+            insertSafely(entry, action);
+            return;
+        }
+        try {
+            auditLogExecutor.execute(() -> insertSafely(entry, action));
+        } catch (RejectedExecutionException e) {
+            // 降级:线程池拒绝(关闭/饱和且策略不可用)→ 同步写一次,不丢审计
+            log.error("[AuditLogAspect] 审计异步执行被拒绝,降级为同步写入: action={}, target={}",
+                    action, entry.getTarget(), e);
+            insertSafely(entry, action);
+        }
+    }
+
+    /** R-44: 同步写入一条审计;失败仅记日志、绝不抛出(保持 R-31 的"失败不影响业务"语义)。 */
+    private void insertSafely(com.hospital.core.platform.domain.AuditLog entry, String action) {
         try {
             auditLogMapper.insert(entry);
         } catch (RuntimeException e) {
             // R-31: 审计写入失败绝不能影响业务流程(尤其失败场景下不能把原始异常替换掉)
             log.error("[AuditLogAspect] 审计日志写入失败: action={}, target={}",
-                    auditLog.action(), entry.getTarget(), e);
+                    action, entry.getTarget(), e);
         }
     }
 

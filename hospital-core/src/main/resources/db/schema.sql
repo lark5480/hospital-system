@@ -339,6 +339,9 @@ CREATE INDEX IF NOT EXISTS idx_task_station_status ON dispatch.exam_task(station
 CREATE INDEX IF NOT EXISTS idx_task_patient_status ON dispatch.exam_task(patient_id, status);
 CREATE INDEX IF NOT EXISTS idx_board_station       ON dispatch.queue_board(station, status, seq);
 CREATE INDEX IF NOT EXISTS idx_board_created_at    ON dispatch.queue_board(created_at DESC);
+-- R-37: 看板不传 station 时按状态白名单过滤(剔除 DONE),需要以 status 打头的索引才能避免全表扫描。
+-- 注意与 idx_board_station 的区别:那把索引前导列是 station,只覆盖"指定工位"的查询路径。
+CREATE INDEX IF NOT EXISTS idx_board_status_seq    ON dispatch.queue_board(status, seq);
 CREATE INDEX IF NOT EXISTS idx_report_visit        ON report.record(visit_id);
 CREATE INDEX IF NOT EXISTS idx_report_patient      ON report.record(patient_id);
 CREATE INDEX IF NOT EXISTS idx_report_type_status  ON report.record(type, status);

@@ -9,6 +9,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.hospital.core.clinical.domain.Registration;
 import com.hospital.core.clinical.domain.Visit;
 import com.hospital.core.clinical.domain.VisitStatusEvent;
@@ -37,15 +38,25 @@ public class RegistrationService {
         if (patientService.get(patientId) == null) {
             throw new IllegalArgumentException("患者不存在: " + patientId);
         }
-        Long todayCount = registrationMapper.selectCount(
-                new LambdaQueryWrapper<Registration>()
-                        .eq(Registration::getDeptId, deptId)
-                        .ge(Registration::getCreatedAt, LocalDate.now().atStartOfDay()));
+        // R-38: 当日排队号由"全表 count + 1"改为 MAX(queue_no) + 1(单条聚合,配合已有索引 idx_reg_dept_created)。
+        // 语义核对:旧实现为 count(当日本科室全部挂号行,含 CANCELLED) + 1;新实现为 MAX(queue_no) + 1。
+        // 由于 queue_no 恒等于"当日行数 + 1"且单调递增、历史行从不删除,故 MAX(queue_no) == 当日行数,
+        // 两者结果一致(仅当存在删行/人工跳号才会不同)。
+        // 并发差异:count 与 MAX 都是"读后写",并发下同样可能取到同一号而重号,与改造前风险等同(未加重);
+        // 本任务不改 schema/约束,故保留原语义,仅利用已索引列缩小扫描范围。
+        // TODO(P2 R-38):并发重号仍无 DB 兜底 —— 需按"科室 + 当日"维度补唯一约束(或顺序号序列/行锁),
+        //               否则两个并发 register 仍可能读到同一 MAX 而重号;本任务按要求不动 schema。
+        Object maxObj = registrationMapper.selectObjs(new QueryWrapper<Registration>()
+                        .select("COALESCE(MAX(queue_no), 0)")
+                        .eq("dept_id", deptId)
+                        .ge("created_at", LocalDate.now().atStartOfDay()))
+                .stream().findFirst().orElse(null);
+        int todayMax = maxObj instanceof Number n ? n.intValue() : 0;
         Registration reg = new Registration();
         reg.setPatientId(patientId);
         reg.setDeptId(deptId);
         reg.setDoctorId(doctorId);
-        reg.setQueueNo(todayCount.intValue() + 1);
+        reg.setQueueNo(todayMax + 1);
         reg.setStatus("WAITING");
         reg.setCreatedAt(LocalDateTime.now());
         registrationMapper.insert(reg);

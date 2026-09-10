@@ -23,6 +23,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.context.ApplicationEventPublisher;
 
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.hospital.core.booking.domain.AppointmentCreatedEvent;
 import com.hospital.core.booking.domain.ExamItemBrief;
 import com.hospital.core.dispatch.domain.ExamTask;
@@ -273,10 +274,10 @@ class DispatchServiceTest {
         void requeue_success() {
             var t = task(1L, "SKIPPED", 1);
             t.setStartedAt(java.time.LocalDateTime.now());
-            var pendingSibling = task(2L, "PENDING", 5);
             when(taskMapper.selectById(1L)).thenReturn(t);
             when(boardMapper.selectById(1L)).thenReturn(new QueueBoard());
-            when(taskMapper.selectList(any())).thenReturn(List.of(t, pendingSibling));
+            // R-38: 队尾序号改由 selectMaxSeq(单条 MAX 聚合)提供,原 selectList 全量桩失配 → 改为聚合桩
+            when(taskMapper.selectMaxSeq("采血室")).thenReturn(5);
 
             service.requeue(1L);
 
@@ -314,11 +315,11 @@ class DispatchServiceTest {
         @DisplayName("requeue: 其余项已完成但未出报告(存量旧数据) → 允许重新排队")
         void requeue_doneSiblingsButNoReport_allowed() {
             var t = task(1L, "SKIPPED", 2);
-            var doneSibling = task(2L, "DONE", 1);
             when(taskMapper.selectById(1L)).thenReturn(t);
             when(boardMapper.selectById(1L)).thenReturn(new QueueBoard());
             when(reportService.existsForAppointment(1L)).thenReturn(false);
-            when(taskMapper.selectList(any())).thenReturn(List.of(t, doneSibling));
+            // R-38: 队尾序号改由 selectMaxSeq 提供(原 selectList 全量桩失配 → 改聚合桩)
+            when(taskMapper.selectMaxSeq("采血室")).thenReturn(1);
 
             service.requeue(1L);
 
@@ -332,22 +333,29 @@ class DispatchServiceTest {
     class BoardQuery {
 
         @Test
-        @DisplayName("同 station 按 状态优先级(IN_PROGRESS=1 < PENDING=0)再按 seq 排序")
-        void board_sortsByStatusThenSeq() {
+        @DisplayName("R-37: 状态优先级(待检前置)+ seq 排序下推到 SQL,服务层透传 DB 顺序")
+        void board_pushesOrderingDownToSql() {
             var pending1 = board("采血室", "PENDING", 1);
+            var pending3 = board("采血室", "PENDING", 3);
             var inProgress = board("采血室", "IN_PROGRESS", 2);
-            var pending2 = board("采血室", "PENDING", 3);
-            when(boardMapper.selectList(any())).thenReturn(new ArrayList<>(List.of(pending1, inProgress, pending2)));
+            // R-37: 排序已下推到 SQL(CASE WHEN 状态优先级,再按 seq),故桩返回"DB 已排好序"的行,服务层仅透传
+            when(boardMapper.selectList(any())).thenReturn(new ArrayList<>(List.of(pending1, pending3, inProgress)));
 
             List<QueueBoard> result = service.board("采血室");
 
             assertThat(result).hasSize(3);
-            // PENDING(0) < IN_PROGRESS(1),待检先排;同 PENDING 按 seq 升序
+            // 待检(PENDING)先于检查中(IN_PROGRESS);同 PENDING 按 seq 升序 —— 该顺序由 SQL 保证,此处验证透传
             assertThat(result.get(0).getStatus()).isEqualTo("PENDING");
             assertThat(result.get(0).getSeq()).isEqualTo(1);
             assertThat(result.get(1).getStatus()).isEqualTo("PENDING");
             assertThat(result.get(1).getSeq()).isEqualTo(3);
             assertThat(result.get(2).getStatus()).isEqualTo("IN_PROGRESS");
+
+            // R-37: 断言排序与过滤确实已下推到 SQL(而非残留的 Java 排序)
+            ArgumentCaptor<QueryWrapper<QueueBoard>> captor = ArgumentCaptor.forClass(QueryWrapper.class);
+            verify(boardMapper).selectList(captor.capture());
+            String sqlSegment = captor.getValue().getSqlSegment();
+            assertThat(sqlSegment).contains("CASE WHEN").contains("seq");
         }
 
         @Test

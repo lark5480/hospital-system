@@ -491,10 +491,13 @@ public class VisitService {
         // 科室过滤(跨科协作):归属科室(dept_id) 或 有待执行医嘱的执行科室(execution_dept_id) 均可看见。
         // 用子查询保持单条 SQL + O(1) 分页,total 与 items 一致。
         if (currentDeptId != null) {
+            // R-43: 原实现用字符串拼接把 currentDeptId 塞进 inSql,虽因类型是 Long 无注入风险,
+            // 但会破坏 PreparedStatement 复用与执行计划缓存。改用 apply + {0} 占位符绑定参数,
+            // 语义完全等价(仍是一条 SQL 里的子查询,O(1) 分页,total 与 items 一致)。
             wrapper.and(w -> w
                     .eq(VisitReadModel::getDeptId, currentDeptId)
-                    .or().inSql(VisitReadModel::getVisitId,
-                            "SELECT visit_id FROM clinical.orders WHERE execution_dept_id = " + currentDeptId));
+                    .or().apply("visit_id IN (SELECT visit_id FROM clinical.orders WHERE execution_dept_id = {0})",
+                            currentDeptId));
         }
 
         // 关键字搜索

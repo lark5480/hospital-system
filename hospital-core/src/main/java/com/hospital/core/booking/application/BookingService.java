@@ -3,8 +3,13 @@ package com.hospital.core.booking.application;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
@@ -16,6 +21,7 @@ import org.springframework.transaction.event.TransactionalEventListener;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.hospital.core.booking.domain.Appointment;
 import com.hospital.core.booking.domain.AppointmentCreatedEvent;
 import com.hospital.core.booking.domain.AppointmentStatusEvent;
@@ -112,23 +118,34 @@ public class BookingService {
     @Transactional
     public void ensureSlotsExist(Long packageId, int days, int capacity) {
         LocalDate today = LocalDate.now();
+        LocalDate end = today.plusDays(Math.max(days - 1, 0));
+        // R-42: 一次范围查询取回已存在的 (exam_date, period) 集合做内存去重,
+        // 替代原实现 days × 2 次逐格 selectCount 的 N+1。
+        List<Slot> existing = slotMapper.selectList(new LambdaQueryWrapper<Slot>()
+                .eq(Slot::getPackageId, packageId)
+                .ge(Slot::getExamDate, today)
+                .le(Slot::getExamDate, end));
+        Set<String> existingKeys = new HashSet<>();
+        for (Slot s : existing) {
+            existingKeys.add(s.getExamDate() + "|" + s.getPeriod());
+        }
+        List<Slot> toInsert = new ArrayList<>();
         for (int i = 0; i < days; i++) {
             LocalDate date = today.plusDays(i);
             for (String period : List.of("AM", "PM")) {
-                boolean exists = slotMapper.selectCount(
-                        new LambdaQueryWrapper<Slot>()
-                                .eq(Slot::getPackageId, packageId)
-                                .eq(Slot::getExamDate, date)
-                                .eq(Slot::getPeriod, period)) > 0;
-                if (exists) continue;
+                if (existingKeys.contains(date + "|" + period)) continue;
                 Slot s = new Slot();
                 s.setPackageId(packageId);
                 s.setExamDate(date);
                 s.setPeriod(period);
                 s.setCapacity(capacity);
                 s.setBooked(0);
-                slotMapper.insert(s);
+                toInsert.add(s);
             }
+        }
+        // R-42: 单条批量 INSERT 落库,替代逐条 insert 的写放大。
+        if (!toInsert.isEmpty()) {
+            slotMapper.batchInsert(toInsert);
         }
     }
 
@@ -139,12 +156,28 @@ public class BookingService {
     @Transactional
     public int cleanupExpiredAppointments() {
         List<Appointment> expired = appointmentMapper.selectExpiredBooked(LocalDate.now());
+        if (expired.isEmpty()) {
+            return 0;
+        }
+        // R-42: 批量 UPDATE 替代逐条 updateById + decrementBooked 的写放大。
+        // 1) 一次 UPDATE 把这批过期预约置 CANCELLED(替代 N 次 updateById)。
+        List<Long> ids = expired.stream().map(Appointment::getId).toList();
+        appointmentMapper.update(null, new UpdateWrapper<Appointment>()
+                .set("status", "CANCELLED")
+                .in("id", ids));
+        // 2) 按 slot 聚合取消数量,一次批量释放号源(替代 N 次 decrementBooked)。
+        Map<Long, Integer> releaseBySlot = new HashMap<>();
         for (Appointment a : expired) {
-            a.setStatus("CANCELLED");
-            appointmentMapper.updateById(a);
             if (a.getSlotId() != null) {
-                slotMapper.decrementBooked(a.getSlotId());
+                releaseBySlot.merge(a.getSlotId(), 1, Integer::sum);
             }
+        }
+        if (!releaseBySlot.isEmpty()) {
+            List<Map<String, Object>> decrements = new ArrayList<>(releaseBySlot.size());
+            for (Map.Entry<Long, Integer> e : releaseBySlot.entrySet()) {
+                decrements.add(Map.of("slotId", e.getKey(), "cnt", e.getValue()));
+            }
+            slotMapper.releaseBookedBatch(decrements);
         }
         return expired.size();
     }
@@ -186,21 +219,21 @@ public class BookingService {
         if (updated == 0) {
             throw new IllegalStateException("号源已满");
         }
+        // R-42: 取价提前到 insert 之前。原实现先 insert 拿到自增 id,再 updateById 回填付费字段,
+        // 同一行被写两次;现将套餐定价一次性装配好后单次 insert,预约只落一次盘。
+        // C端预约演示:自动标记已付费,金额取套餐定价
+        ExamPackage pkg = packageMapper.selectById(packageId);
         Appointment appt = new Appointment();
         appt.setPatientId(patientId);
         appt.setPackageId(packageId);
         appt.setSlotId(slotId);
         appt.setStatus("BOOKED");
         appt.setCreatedAt(LocalDateTime.now());
-        appointmentMapper.insert(appt);
-
-        // C端预约演示:自动标记已付费,金额取套餐定价
-        ExamPackage pkg = packageMapper.selectById(packageId);
         if (pkg != null && pkg.getPrice() != null) {
             appt.setPayStatus("PAID");
             appt.setPayAmount(pkg.getPrice());
-            appointmentMapper.updateById(appt);
         }
+        appointmentMapper.insert(appt);
 
         // 组装自包含事件快照(患者名 + 项目简报),下游 Dispatch 零回查。
         String patientName = patientApi.getName(patientId);

@@ -46,10 +46,19 @@ public class SecurityConfig {
     private final JwtAuthFilter jwtAuthFilter;
     private final ObjectMapper objectMapper;
 
-    /** 密码加密器(BCrypt)。 */
+    /**
+     * 密码加密器(BCrypt)。
+     *
+     * <p>R-45: 强度由默认 10 提升到 12。前置条件是登录失败锁定与 IP 限流已落地
+     * (见 {@code LoginAttemptService}),否则暴力破解的性价比会随 cost 提升而上升。
+     *
+     * <p>关于性能:BCrypt 的校验代价由<b>哈希里记录的 cost</b>决定,而不是由本 Bean 的强度决定,
+     * 因此既有 cost=10 的账号登录速度不变;只有"新建/修改密码"时的编码会变慢
+     * (单次约 250~400ms),属可接受的一次性开销。多实例部署时各实例强度需保持一致。
+     */
     @Bean
     public PasswordEncoder passwordEncoder() {
-        return new BCryptPasswordEncoder();
+        return new BCryptPasswordEncoder(12);
     }
 
     @Bean

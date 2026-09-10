@@ -40,6 +40,13 @@
 | R-32 | 错误信息直出：`include-message` / `include-stacktrace` 由 `always` 改为 `never`（业务中文提示由 `GlobalExceptionHandler` 显式构造，不受影响） | core `application.yml` |
 | R-35 | 通知服务 CORS：`allowedOriginPatterns("*")` + `allowCredentials(true)` 的危险组合，改为可配置 `app.cors.allowed-origins`，默认仅本机开发源（与 core 口径一致） | `CorsConfig`、notification `application.yml` |
 | R-36 | 中间件暴露：compose 中 PG/Redis/MinIO/RabbitMQ 全部端口改绑 `127.0.0.1`（原先内网任何人可用默认口令直连拖库）；新增 `.env.example` 列出全部需覆盖的密钥 | `docker-compose.yml`、新增 `.env.example` |
+| R-37 | 看板全量加载：`board()` 下推状态白名单（剔除 DONE）+ `CASE WHEN` 排序下推 SQL，删除 Java `rows.sort`；`listActiveStations()` 改为单条 `SELECT DISTINCT`；补 `idx_board_status_seq`。**刻意不加"当日"过滤**——会让无新预约时的看板空白（体验回退），剔除 DONE 已解决体积问题 | `DispatchService`、`QueueBoardMapper`、`schema.sql` |
+| R-38 | `callNext` 的 N+1（单 station 积压 200 人时约 401 次 SQL）改单条 SQL（`NOT EXISTS` + `MIN(seq)` + `ORDER BY seq LIMIT 1`）；`max(seq)` 改聚合查询；挂号排队号由 `selectCount` 改 `MAX(queue_no)+1` | `DispatchService`、`ExamTaskMapper`、`RegistrationService` |
+| R-41 | PDF 字体不再每次重解析：改为进程级共享字体解析器 + 缺失降级标记（原每次 `exists()` + 解析约 20MB 的 ttc）。同步阻塞请求线程的问题保留并留 `TODO(P2)`（属接口语义变更） | `ReportPdfGenerator` |
+| R-42 | `book()` 取价提到 insert 之前（同一行不再两次写）；`ensureSlotsExist` 由 14 次 `selectCount` + 14 次 insert 改为 1 次范围查询 + 1 条批量 INSERT；过期预约清理改批量 UPDATE + 批量释放号源 | `BookingService`、`SlotMapper` |
+| R-43 | `listPage` 的 `inSql` 字符串拼接改为 `apply(..., {0})` 参数绑定（保留单条 SQL 与 O(1) 分页语义）；`orders.execution_dept_id` 索引已在 R-04 补齐 | `VisitService` |
+| R-44 | 审计写入移出业务线程：新增 `auditLogExecutor`（core 1/max 2/queue 1000/守护线程/`CallerRunsPolicy`）；提交失败或执行器不可用时**降级为同步写入**，审计绝不静默丢失；R-31 的 `try/finally` 语义保持 | `AsyncConfig`、`AuditLogAspect` |
+| R-45 | BCrypt 强度 10 → 12（前置的登录失败锁定与 IP 限流已落地）。说明：校验代价由哈希内记录的 cost 决定，既有账号登录速度不变，仅新建/改密的编码变慢 | `SecurityConfig` |
 | 决策 4B | **由网关注入 `X-Internal-Token`**（`AddRequestHeader`）——令牌只存在于服务端，浏览器永不接触，前端零改动；file-service 在 prod 未配置令牌即拒绝启动（与 R-01 对称） | gateway `application.yml`、`InternalTokenFilter`、file-service `SecurityConfig` |
 | 决策 5 | **改密/重置即吊销该用户全部 token**（新增 `TokenRevocationService`，Redis 用户维度，TTL 与 token 对齐）；JWT TTL 8h→4h；`issue()` 加 jti 为单设备登出预留 | `TokenRevocationService`(新)、`JwtAuthFilter`、`JwtTokenService`、`PasswordController`、`ChangePasswordView.vue` |
 
@@ -167,7 +174,7 @@ List<Charge> unpaid = chargeMapper.selectList(null).stream()      // 无 WHERE
 
 ## 三、High 问题（22 条）
 
-> **已修复**：R-07、R-08、R-09、R-10、R-12、R-13、R-14、R-16、R-17、R-18、R-19、R-20、R-22、R-23、R-24、R-26、R-27、R-28
+> **已修复**：R-07、R-08、R-09、R-10、R-12、R-13、R-14、R-16、R-17、R-18、R-19、R-20、R-22、R-23、R-24、R-26、R-27、R-28、R-37、R-38、R-41、R-42、R-43、R-45
 > **部分修复**：R-11（notification 仍 permitAll）
 > **未启动**：R-15（启动重建守卫）、R-21（建单批量写，已留 TODO P2）、R-25（重复预约幂等校验）
 
@@ -200,10 +207,10 @@ List<Charge> unpaid = chargeMapper.selectList(null).stream()      // 无 WHERE
 
 ## 四、Medium 问题（26 条）
 
-> **已修复**：R-30（上传正则 + 20MB + 禁止覆盖）、R-31（审计失败也留痕）、R-32（错误信息不再直出）、R-35（CORS 不再通配）、R-36（中间件端口收回环 + `.env.example`）
+> **已修复**：R-30（上传正则 + 20MB + 禁止覆盖）、R-31（审计失败也留痕）、R-32（错误信息不再直出）、R-35（CORS 不再通配）、R-36（中间件端口收回环 + `.env.example`）、R-44（审计写入移出业务线程，失败降级为同步）
 > **已缓解**：R-29（全表扫描与长事务已由 R-04/R-05 治理，锁等待放大面显著收窄；未单独做压测验证）
-> **部分修复**：R-33（`/actuator` 已收口，Swagger 仍放行）、R-34（改密吊销已实现，`?token=` query 回退未动）、R-45（锁定/限流已落地，BCrypt cost 未提）
-> **未启动**：R-37、R-38、R-39、R-40、R-41、R-42、R-43、R-44（审计仍同步写）、R-46～R-55
+> **部分修复**：R-33（`/actuator` 已收口，Swagger 仍放行）、R-34（改密吊销已实现，`?token=` query 回退未动）
+> **未启动**：R-39、R-40（前端性能）、R-46～R-55（测试项）
 
 | 编号 | 标题 | 维度 | 位置 |
 |---|---|---|---|
