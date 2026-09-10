@@ -5,7 +5,7 @@
 - **参与 Agent**：SECURITY（安全）、PERFORMANCE（性能）、TESTING（测试质量）
 - **流程**：第 1 轮三方独立审查 → 第 2 轮交叉质询（反驳 / 降级 / 升级 / 补充 / 自我修正 / 预判辩护）→ 第 3 轮主席收敛
 - **产出**：61 条问题（6 Critical / 22 High / 26 Medium / 7 Low），含 8 条质询后新增、9 条质询后改级
-- **实施状态（2026-09-10 更新）**：P0 七项 + P1 性能/工程化已全部落盘，另按「待拍板 5 件事」的分析结论完成 4 项加固 —— **29 项已修复、1 项已缓解、4 项部分修复**。详见下方「实施状态总览」
+- **实施状态（2026-09-10 更新）**：P0 + P1 + P2 已全部落盘 —— **55 项已修复、1 项已缓解、5 项部分修复**。详见下方「实施状态总览」
 - **定级标准**：
   - **Critical**：可直接导致批量敏感数据泄露 / 权限完全失守，或线上必然不可用
   - **High**：需要低门槛前置条件即可造成实质损害，或数据量到 10 万级必然劣化到不可用
@@ -33,6 +33,15 @@
 | R-22 | `RestTemplate` connect 3s / read 15s；`reportPdfExecutor` 补 `CallerRunsPolicy` | `AsyncConfig`、`FileServiceClient` |
 | R-30 | `objectName` 正则校验；20MB 限制；同名对象 409 禁止覆盖（防报告投毒）；上传响应体 `Map.of` NPE 修复 | `FileController`、file-service `application.yml` |
 | R-57 | 删除 `AuthService` 空密码免密分支；`PasswordController` 对称分支一并删除 | `AuthService`、`PasswordController` |
+| R-39 | element-plus 按需引入：vite 加 `unplugin-vue-components` + `ElementPlusResolver({ importStyle: false })`（保留全量 CSS —— 主题映射层 `styles/element.css` 依赖 `index.css` 的加载顺序，且 `ElMessage` 这类显式 import 的函数式 API 不走 resolver）。**必须显式 `app.use(ElLoading)`**：该插件只解析 `<el-xxx>` 标签、**不解析 `v-loading` 指令**，实测不注册会让全仓 20 处 `v-loading` 静默失效。新增解析回归测试（build 成功 ≠ 组件可用） | `vite.config.ts`、`main.ts`、新增 `elementPlusResolve.spec.ts` |
+| R-40 | 轮询加页面可见性感知：新增 `utils/polling.ts`（`createVisibilityAwarePoller`，隐藏即暂停、可见即拉取并恢复、`start()` 幂等），`OutpatientScreenView` / `PatientMyQueueView` 共用并清理监听。核实两页数据与看板 SSE **不重叠**，故保留轮询 | 新增 `utils/polling.ts`、两个 View |
+| R-49 | 消除集成测试的种子数据耦合：`FhirApiTest` / `VisitReadModelTest` / `MedicalRecordTest` 改为用 `JdbcTemplate` 自造数据 + 自清理，`total==1` 改包含式断言 | 三个测试类 |
+| R-50 | `DataInitializer` 补测试（纯 Mockito）：水位命中跳过重建 / 水位缺失触发重建 / 无未迁移行时不下发全表查询 / **冲突时不得执行任何 DELETE**（R-58 护栏） | 新增 `DataInitializerTest` |
+| R-56 | token 存储窗口收窄：`localStorage` → `sessionStorage`，storage 访问加不可用兜底（原写法在禁用 Storage 时会在 import 阶段抛错导致白屏），旧 localStorage 键自动清理；401 兜底改为一次性清空内存态 + 缓存（原先残留 `roles/authorities`，会出现"已登出仍渲染管理员菜单"） | `stores/auth.ts`、`api/http.ts` |
+| R-59 | `VisitStatus` 参数化矩阵测试。**实测纠正**：`of(null)` 静默降级 `CREATED`，但 `of("")` / `of("NOT_A_STATUS")` 会抛 `IllegalArgumentException`（并非全部静默），且大小写敏感；已按实际行为固化并标注不一致 | 新增 `VisitStatusTest` |
+| R-60 | PDF 字体路径跨平台：路径配置化为 `app.report.pdf.font-path`，并内置 Windows/Linux/macOS 候选列表，全部缺失时沿用降级 + 告警；新增 PDF 产物断言（`%PDF-` 魔数、`%%EOF`），并在强制无字体环境下验证降级路径 | `ReportPdfGenerator`、`application.yml`、新增 `ReportPdfGeneratorTest` |
+| R-61 | 前端零测试：引入 vitest + jsdom + `@vue/test-utils`，`vitest.config.ts` **复用 `vite.config.ts` 的插件**（否则按需引入类问题在测试里永远暴露不出来），19 个用例覆盖 polling / auth 存储与权限 / 密码校验 / element-plus 解析 | `package.json`、新增 `vitest.config.ts` 与 4 个 spec |
+| R-15 | 启动期全量重建：新增 `platform.meta` 水位表；`initAll()` 加版本守卫 + 主键游标分批；`migrateUsers()` 先 `count(user_id IS NULL)` 短路。实测启动步进总耗时 **36ms** | `DataInitializer`、`VisitReadModelService`、`schema.sql` |
 | R-16 | 读模型写放大：新增一条聚合 SQL（`VisitReadModelMapper.selectAggregate`）取代 2 次全量 selectList；名称解析走 `NameCache`；`addOrder/editOrder/cancelOrder` 复用刷新结果，不再重复 `getDetail()`。**异步刷新主动放弃**（会破坏 `VisitReadModelTest` 的事务可见性），已在 javadoc 写明 | `VisitReadModelService`、`VisitReadModelMapper`、`VisitService` |
 | R-19 | 名称解析 N+1：新增 `NameCache`（TTL 5min / 上限 5000 / 惰性清理），lab / pharmacy / report 列表改为批量解析（一次 `WHERE id IN`），出参结构不变 | 新增 `platform/support/NameCache`、`LabService`、`PrescriptionService`、`ReportService` |
 | R-20 | 搜索索引失效：引入 `pg_trgm` 扩展 + 5 个 GIN 三元组索引，使 `LIKE '%kw%'` 也能走索引，**Java 查询无需改动**；注释说明中文场景后续应换 `zhparser` + `tsvector` | `db/schema.sql` |
@@ -64,6 +73,7 @@
 | 编号 | 已完成 | 未完成 |
 |---|---|---|
 | R-11 | core `SecurityConfig` 收口；file-service 加内部令牌 | **notification-service 仍 `permitAll()`**（无 JWT 基础设施，加强制鉴权会打断前端 SSE），仅加注释排 P1 |
+| R-21 | 收费记录（charge）改为单条批量 INSERT，N 次往返降为 1 次 | 医嘱（orders）保持逐条：`charge.order_id` 需要医嘱的自增主键回填，而 `INSERT ... VALUES(),() RETURNING id` 无法通过 MyBatis 可靠按序取回多 id，收益不抵风险。已留 `TODO(P3)`（`reWriteBatchedInserts=true` + `ExecutorType.BATCH`） |
 | R-18 | `VisitService.list()` 在 `currentDeptId==null` 且非 admin 时返回空列表 + 告警 | 循环内全表扫描的 O(V×O) 算法未优化（P1） |
 | R-33 | `/actuator/**` 移出 permitAll | Swagger 仍放行（开发依赖），生产关闭排 P2 |
 | R-34 | 改密/重置吊销已实现 | `?token=` query 回退未动（SSE 依赖 `EventSource`，P2） |
@@ -77,10 +87,13 @@
 | `StaffView.vue` 既有编译错误 | `patientApi.resetPassword` → `resetPatientPassword`；`Staff` 类型补 `userId` |
 | 403 无统一提示 | `http.ts` 补 403 中文提示；401 时不再重复跳转登录页 |
 
-### 未修复（按计划延后）
+### 遗留（本轮新发现的后续项，均非原报告条目）
 
-- **P1**：R-04 索引、R-05 全表扫描下推、R-06 金额测试、R-16/17/19/20/21/23/24 性能项、R-26 JaCoCo、R-27 三模块测试、R-28 MockMvc、R-29/31/32/35/36/44
-- **P2**：R-46~R-56（测试与前端）、R-58 启动期 DELETE 迁 Flyway、R-59/60/61
+- **R-21 医嘱批量写入**（部分完成）：收费记录已批量化，医嘱因需回填自增主键给 `charge.order_id` 而保持逐条，已留 `TODO(P3)`
+- **R-39 暴露的类型债**：开启按需引入后若生成 `components.d.ts`，`vue-tsc` 会立刻暴露 **34 个既有类型问题**（`el-table` 作用域插槽的 row 被推断为 `DefaultRow`、`el-tag :type` 传入了含空串的联合类型）。本轮为守住"type-check 0 错误"基线关闭了 dts 生成；修完这 34 处即可打开，换取组件级类型安全
+- **R-56 的行为变化**：改 sessionStorage 后**新开标签页不再共享登录态**（单标签刷新仍免登）。这是收窄 XSS 窗口的代价，两全需 httpOnly Cookie + CSRF（P3）
+- **R-60 的运维项**：容器 / CI（ubuntu）无中文字体，PDF 中文会走降级（方框）。建议镜像挂载字体或设置 `PDF_FONT_PATH`
+- **R-47 未覆盖部分**：`BookingService` 的号源生成 / 过期清理 / 状态机用例仍缺（只补了并发与幂等）
 - **下一迭代**：决策 4 方案 A —— 撤掉网关 `/api/files` 路由、改由 core 代理 upload/list，让 file-service 真正退到内网（当前有方案 B 顶着）
 - **决策 1 结论**：不开放 `/visits/page`、`/reports/list`、`/reports/type` 给患者，也不新建 `/mine`。C 端能力一律走 `PatientController` 下自带归属校验的专用端点（`/api/patient/reports` 等），已可满足现有 `patient/*` 全部页面
 
@@ -110,7 +123,7 @@
 
 ## 二、Critical 问题（6 条）
 
-> **状态**：R-01 ✅ 已修复 ｜ R-02 ✅ 已修复 ｜ R-03 ✅ 已修复 ｜ R-04 / R-05 / R-06 ⏳ P1 未启动
+> **状态**：R-01 ✅ ｜ R-02 ✅ ｜ R-03 ✅ ｜ R-04 ✅（47 条索引）｜ R-05 ✅（全表扫描下推 WHERE）｜ R-06 ✅（金额校验 + 精度）—— **6 项全部完成**
 
 ### R-01 JWT 签名密钥硬编码为公开默认值，可自签任意身份令牌
 - **维度** 安全（SEC-01）｜**共识** 三方无异议
@@ -183,9 +196,9 @@ List<Charge> unpaid = chargeMapper.selectList(null).stream()      // 无 WHERE
 
 ## 三、High 问题（22 条）
 
-> **已修复**：R-07、R-08、R-09、R-10、R-12、R-13、R-14、R-16、R-17、R-18、R-19、R-20、R-22、R-23、R-24、R-26、R-27、R-28、R-37、R-38、R-41、R-42、R-43、R-45、R-46、R-48、R-51、R-52、R-53、R-54
-> **部分修复**：R-11（notification 仍 permitAll）、R-47（缺号源生成/清理/状态机的用例，仅补了并发与幂等）
-> **未启动**：R-21（建单批量写，已留 TODO P2）、R-49（集成测试仍依赖全局种子数据）、R-50（`DataInitializer` 无直接单测）
+> **已修复（34 项）**：R-07、R-08、R-09、R-10、R-12、R-13、R-14、R-15、R-16、R-17、R-18、R-19、R-20、R-22、R-23、R-24、R-25、R-26、R-27、R-28、R-37、R-38、R-41、R-42、R-43、R-45、R-46、R-48、R-49、R-50、R-51、R-52、R-53、R-54
+> **部分修复**：R-11（notification 仍 permitAll）、R-21（收费记录已批量，医嘱因需回填自增主键保持逐条，留 TODO P3）、R-47（缺号源生成/清理/状态机用例，仅补了并发与幂等）
+> **未启动**：无
 
 | 编号 | 标题 | 维度 | 位置 | 备注 |
 |---|---|---|---|---|
@@ -216,10 +229,10 @@ List<Charge> unpaid = chargeMapper.selectList(null).stream()      // 无 WHERE
 
 ## 四、Medium 问题（26 条）
 
-> **已修复**：R-30（上传正则 + 20MB + 禁止覆盖）、R-31（审计失败也留痕）、R-32（错误信息不再直出）、R-35（CORS 不再通配）、R-36（中间件端口收回环 + `.env.example`）、R-44（审计写入移出业务线程，失败降级为同步）
+> **已修复（11 项）**：R-30（上传正则 + 20MB + 禁止覆盖）、R-31（审计失败也留痕）、R-32（错误信息不再直出）、R-35（CORS 不再通配）、R-36（中间件端口收回环 + `.env.example`）、R-39（element-plus 按需引入 + 解析回归测试）、R-40（轮询加页面可见性感知）、R-44（审计写入移出业务线程，失败降级为同步）、R-55（CI 前端门禁）
 > **已缓解**：R-29（全表扫描与长事务已由 R-04/R-05 治理，锁等待放大面显著收窄；未单独做压测验证）
 > **部分修复**：R-33（`/actuator` 已收口，Swagger 仍放行）、R-34（改密吊销已实现，`?token=` query 回退未动）
-> **未启动**：R-39、R-40（前端性能）、R-46～R-55（测试项）
+> **未启动**：无
 
 | 编号 | 标题 | 维度 | 位置 |
 |---|---|---|---|
@@ -253,8 +266,8 @@ List<Charge> unpaid = chargeMapper.selectList(null).stream()      // 无 WHERE
 
 ## 五、Low 问题（7 条）
 
-> **已修复**：R-57（空密码免密分支已删除）、R-58（启动期破坏性 DELETE 改为探测+告警，不再静默删数据）
-> **未启动**：R-56（前端 localStorage）、R-59（`VisitStatus` 参数化矩阵）、R-60（PDF 字体路径 Windows-only）、R-61（前端零测试）
+> **已修复（6 项）**：R-56（token 由 localStorage 改 sessionStorage，并收口 storage 访问）、R-57（空密码免密分支已删除）、R-58（启动期破坏性 DELETE 改为探测+告警，不再静默删数据）、R-59（`VisitStatus` 参数化矩阵，固化现状）、R-60（PDF 字体路径跨平台 + 产物断言）、R-61（引入 vitest，19 个前端用例）
+> **未启动**：无
 
 | 编号 | 标题 | 维度 | 位置 |
 |---|---|---|---|

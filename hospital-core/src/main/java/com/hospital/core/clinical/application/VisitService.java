@@ -3,6 +3,7 @@ package com.hospital.core.clinical.application;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -92,19 +93,26 @@ public class VisitService {
         visit.setCreatedAt(LocalDateTime.now());
         visitMapper.insert(visit);
 
-        // R-05: 医嘱/收费仍是逐条 insert(N 条医嘱 = N 次 insert + N 次 charge insert)。
-        // TODO(R-05 待办): 后续可改为 MyBatis-Plus 批量插入或 XML foreach 批量落库,
-        // 本期为控制改造风险(保持 public 签名与事件时序不变)暂保持逐条,但金额统一走 calcAmount 校验。
-        // TODO(P2 R-21): 建单批量写 —— 在不改 Mapper 签名、不新增依赖的前提下,可考虑用
-        //   MyBatis @Insert + <foreach> 批量插入;但需回填自增主键、且 charge.orderId 依赖 order.id,
-        //   风险与收益不匹配,本期不做。后续如启用 PostgreSQL JDBC 的 reWriteBatchedInserts=true,
-        //   配合 JDBC batch,可获得真正的批量写收益。
+        // R-05: 金额统一走 calcAmount 校验(见 R-06)。
+        // R-21: 原实现 N 条医嘱 = N 次 order insert + N 次 charge insert,共 2N 次数据库往返。
+        //   现把 charge 批量化(N 次 → 1 次),orders 仍保持逐条,原因见下方 TODO(P3 R-21)。
         BigDecimal total = BigDecimal.ZERO;
+        // R-21: 收集待插入的 charge,循环结束后一次性批量落库
+        List<Charge> chargesToInsert = new ArrayList<>(orders.size());
         for (Order order : orders) {
             order.setVisitId(visit.getId());
             order.setStatus("CREATED");
             // R-06: 统一金额计算(校验 + 两位小数),避免 NPE / 负额结算 / scale 漂移
             order.setAmount(calcAmount(order.getUnitPrice(), order.getQuantity()));
+
+            // R-21: 医嘱仍需逐条 insert —— charge.order_id 依赖 order 的自增主键回填。
+            //   一次 "INSERT ... VALUES (...),(...) RETURNING id" 无法可靠保证返回顺序与入参一致
+            //   (PostgreSQL 未承诺 RETURNING 的排序),且 MyBatis 的 @Insert 只能返回受影响行数、
+            //   无法直接以 List<Long> 接收多个自增 id(需自定义 ResultHandler / KeyGenerator),
+            //   复杂度与风险不匹配,故 orders 本期不做批量化。
+            // TODO(P3 R-21): 若后续启用 PostgreSQL JDBC 的 reWriteBatchedInserts=true,
+            //   可结合 MyBatis-Plus saveBatch 或 ExecutorType.BATCH 让 orders 也走真正的批量写;
+            //   届时需保证 charge.order_id 与 order 的顺序一一对应。
             orderMapper.insert(order);
 
             Charge charge = new Charge();
@@ -113,9 +121,14 @@ public class VisitService {
             charge.setItemName(order.getItemName());
             charge.setAmount(order.getAmount());
             charge.setPayStatus("UNPAID");
-            chargeMapper.insert(charge);
+            chargesToInsert.add(charge);
 
             total = total.add(order.getAmount());
+        }
+        // R-21: 单条 INSERT ... VALUES (...),(...) 批量写入全部 charge(空集合会拼出非法 SQL,故判空)。
+        // 返回内容与金额口径不变:下方仍按 visitId 回查 charge,行序与金额汇总与原实现一致。
+        if (!chargesToInsert.isEmpty()) {
+            chargeMapper.insertBatch(chargesToInsert);
         }
 
         readModelService.refresh(visit.getId());

@@ -5,6 +5,7 @@ import * as regApi from '@/api/registration'
 import type { Registration } from '@/api/registration'
 import * as orgApi from '@/api/org'
 import { listPatients } from '@/api/patient'
+import { createVisibilityAwarePoller } from '@/utils/polling'
 
 const route = useRoute()
 const departments = ref<{ id: number; name: string }[]>([])
@@ -13,7 +14,6 @@ const patientMap = computed(() => new Map(patients.value.map(p => [p.id, p.name]
 
 const deptId = ref<number>()
 const queue = ref<Registration[]>([])
-let timer: ReturnType<typeof setInterval> | null = null
 
 const currentCalled = computed(() =>
   queue.value
@@ -29,13 +29,16 @@ async function load() {
   } catch { /* ignore */ }
 }
 
+// R-40: 5s 轮询改由可见性感知轮询器驱动 —— 页面隐藏(切后台/最小化)自动暂停,
+// 重新可见时立即拉一次并恢复,避免大屏被切走后仍在后台持续请求。
+const poller = createVisibilityAwarePoller(load, 5000)
+
 function startPolling() {
-  stopPolling()
-  timer = setInterval(load, 5000)
+  poller.start()
 }
 
 function stopPolling() {
-  if (timer) { clearInterval(timer); timer = null }
+  poller.stop()
 }
 
 function switchDept(id: number) {

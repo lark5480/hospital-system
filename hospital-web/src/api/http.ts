@@ -33,11 +33,10 @@ http.interceptors.response.use(
 
       // 401 时清除过期 token 并跳登录
       if (status === 401) {
-        const auth = useAuthStore()
-        auth.token = undefined
-        auth.authenticated = false
-        auth.mustChangePassword = false
-        localStorage.removeItem('hospital_auth')
+        // R-56: 一次性清空"内存认证态 + 持久化缓存",统一由 store 管理底层 storage。
+        // 原先只重置 token/authenticated/mustChangePassword,内存里的 roles/authorities/
+        // 用户资料会残留,表现为"已跳回登录页但侧边栏仍按管理员权限渲染"。
+        useAuthStore().resetAuthState()
         // 已经在登录页(典型:登录失败)时不再重复跳转,避免重复导航告警
         if (router?.currentRoute.value.path !== '/login') {
           router?.push('/login')

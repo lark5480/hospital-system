@@ -21,7 +21,7 @@ async function handleLogin() {
   }
   loading.value = true
   try {
-    // 复用 store 的 doLogin:它会完整写入 token/姓名/科室/角色/权限并 persist 到 localStorage
+    // 复用 store 的 doLogin:它会完整写入 token/姓名/科室/角色/权限并 persist 到 sessionStorage
     await auth.doLogin(form.phone.trim(), form.password)
     tabs.reset()
     ElMessage.success('登录成功')

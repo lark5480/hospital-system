@@ -78,6 +78,13 @@ app:
     # 置为 true 表示放行,但意味着"打挂 Redis 就能让令牌吊销失效",生产不建议。
     revocation-fail-open: false
 
+  # R-60: 报告 PDF 生成配置
+  report:
+    pdf:
+      # R-60: 中文字体路径。留空则按候选列表自动探测(Windows/Linux/macOS 常见路径),
+      # 都找不到时降级为内置字体(中文可能显示为方框)。容器/CI 建议显式指定或挂载字体。
+      font-path: ${PDF_FONT_PATH:}
+
 # 内部文件服务(core → file-service → MinIO)地址;默认 8103 与运行实例一致
 file:
   service:
