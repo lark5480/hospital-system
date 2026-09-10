@@ -65,6 +65,10 @@
 
 1. `APP_JWT_SECRET`：≥32 字节随机串，未注入时 prod 启动失败
 2. `FILE_INTERNAL_TOKEN`：core 与 file-service 必须一致，未注入时 file-service 在 prod 下启动失败
+   - **网关侧默认值必须非空**：`AddRequestHeader` 绑定 `NameValueConfig`，value 为空会让网关启动失败
+     （`Binding to target ... Property: .value Reason: 不能为空`）。故网关配置为
+     `${FILE_INTERNAL_TOKEN:dev-no-token}`，不能写成 `${FILE_INTERNAL_TOKEN:}`。已由
+     `GatewayDefaultTokenContextTest` 守护该回归
 3. **Redis 进入认证关键路径**：`TokenRevocationService` 默认 fail-closed，Redis 不可用会拒绝全部请求（`app.jwt.revocation-fail-open=true` 可切为放行，但削弱吊销语义）
 
 ---

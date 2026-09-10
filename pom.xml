@@ -27,6 +27,9 @@
         <mybatis-plus.version>3.5.7</mybatis-plus.version>
         <minio.version>8.5.7</minio.version>
         <lombok.version>1.18.34</lombok.version>
+        <!-- R-26: 覆盖率工具链。版本集中在此定义(与 Spring Boot 3.2.5 / Java 21 兼容)，
+             子模块只需在 <build><plugins> 中声明插件即可继承 prepare-agent + report 两个 execution。 -->
+        <jacoco.version>0.8.13</jacoco.version>
     </properties>
 
     <dependencyManagement>
@@ -85,6 +88,46 @@
                     <configuration>
                         <parameters>true</parameters>
                     </configuration>
+                </plugin>
+
+                <!--
+                  R-26 覆盖率可见化
+                  目的：让 "覆盖率是多少 / 趋势往哪走" 成为一个可被 mvn verify 回答的问题，
+                        而不是先卡住 CI。因此这里只定义 prepare-agent + report 两个通用 execution，
+                        具体是否启用 check 由各子模块自行决定(见 hospital-core/pom.xml)。
+                  prepare-agent -> 往 surefire 的 argLine 注入 -javaagent，生成 target/jacoco.exec
+                  report        -> 在 test 阶段结束后产出 target/site/jacoco(HTML/XML/CSV)
+                  子模块只需写:
+                      <plugin><groupId>org.jacoco</groupId><artifactId>jacoco-maven-plugin</artifactId></plugin>
+                  即可继承这两个 execution。
+                -->
+                <plugin>
+                    <groupId>org.jacoco</groupId>
+                    <artifactId>jacoco-maven-plugin</artifactId>
+                    <version>${jacoco.version}</version>
+                    <executions>
+                        <execution>
+                            <id>jacoco-prepare-agent</id>
+                            <goals>
+                                <goal>prepare-agent</goal>
+                            </goals>
+                            <configuration>
+                                <!-- 使用插件默认 propertyName(argLine)，确保 surefire 自动带上 javaagent -->
+                                <destFile>${project.build.directory}/jacoco.exec</destFile>
+                            </configuration>
+                        </execution>
+                        <execution>
+                            <id>jacoco-report</id>
+                            <phase>test</phase>
+                            <goals>
+                                <goal>report</goal>
+                            </goals>
+                            <configuration>
+                                <dataFile>${project.build.directory}/jacoco.exec</dataFile>
+                                <outputDirectory>${project.build.directory}/site/jacoco</outputDirectory>
+                            </configuration>
+                        </execution>
+                    </executions>
                 </plugin>
             </plugins>
         </pluginManagement>

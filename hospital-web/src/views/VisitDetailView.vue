@@ -147,8 +147,8 @@ async function submitOrder() {
   try {
     await store.addOrder(visitId, { ...orderForm })
     // 如果就诊已确单,自动同步新医嘱到对应单据(支持二次诊断追加)
-    if (store.detail?.visit.status !== 'CREATED') {
-      const doctorId = store.detail!.visit.doctorId
+    if (store.detail && store.detail.visit.status !== 'CREATED') {
+      const doctorId = store.detail.visit.doctorId
       if (orderForm.type === 'MEDICATION') {
         try {
           await pharmacyApi.createPrescription({ visitId, doctorId })
@@ -386,7 +386,9 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <template v-if="isOwnDetail">
+    <!-- store.detail 在加载中/加载失败时为 null,这里显式加上非空守卫,
+         使模板内对 store.detail.* 的访问都处于已收窄的作用域中 -->
+    <template v-if="store.detail && isOwnDetail">
       <el-descriptions border :column="3" class="block">
         <el-descriptions-item label="患者">{{ store.detail.patientName || store.detail.visit.patientId }}</el-descriptions-item>
         <el-descriptions-item label="医生">{{ store.detail.doctorName || store.detail.visit.doctorId }}</el-descriptions-item>

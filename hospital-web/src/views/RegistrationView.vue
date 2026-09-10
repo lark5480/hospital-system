@@ -13,7 +13,6 @@ const router = useRouter()
 const departments = ref<{ id: number; name: string }[]>([])
 const patients = ref<{ id: number; name: string }[]>([])
 const patientMap = computed(() => new Map(patients.value.map(p => [p.id, p.name])))
-const deptMap = computed(() => new Map(departments.value.map(d => [d.id, d.name])))
 
 // --- 挂号表单 ---
 const formDeptId = ref<number>()

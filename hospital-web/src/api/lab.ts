@@ -1,5 +1,5 @@
 import http from './http'
-import type { LabRequisitionListItem, LabRequisitionDetail, CreateRequisitionRequest, SubmitResultsRequest } from '@/types/lab'
+import type { LabRequisition, LabRequisitionListItem, LabRequisitionDetail, CreateRequisitionRequest, SubmitResultsRequest } from '@/types/lab'
 
 export function listRequisitions(status?: string, deptId?: number) {
   const params: Record<string, any> = {}
