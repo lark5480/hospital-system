@@ -5,7 +5,7 @@
 - **参与 Agent**：SECURITY（安全）、PERFORMANCE（性能）、TESTING（测试质量）
 - **流程**：第 1 轮三方独立审查 → 第 2 轮交叉质询（反驳 / 降级 / 升级 / 补充 / 自我修正 / 预判辩护）→ 第 3 轮主席收敛
 - **产出**：61 条问题（6 Critical / 22 High / 26 Medium / 7 Low），含 8 条质询后新增、9 条质询后改级
-- **实施状态（2026-09-10 更新）**：P0 + P1 + P2 已全部落盘 —— **55 项已修复、1 项已缓解、5 项部分修复**。详见下方「实施状态总览」
+- **实施状态（2026-09-10 更新）**：P0 + P1 + P2 已全部落盘 —— 原 61 条中 **54 项已修复、1 项已缓解、6 项部分修复**；另在复核中发现 **2 条审核漏项（R-62 Critical、R-63 High）尚未修复**。详见下方「实施状态总览」与「遗留」
 - **定级标准**：
   - **Critical**：可直接导致批量敏感数据泄露 / 权限完全失守，或线上必然不可用
   - **High**：需要低门槛前置条件即可造成实质损害，或数据量到 10 万级必然劣化到不可用
@@ -74,10 +74,9 @@
 |---|---|---|
 | R-11 | core `SecurityConfig` 收口；file-service 加内部令牌 | **notification-service 仍 `permitAll()`**（无 JWT 基础设施，加强制鉴权会打断前端 SSE），仅加注释排 P1 |
 | R-21 | 收费记录（charge）改为单条批量 INSERT，N 次往返降为 1 次 | 医嘱（orders）保持逐条：`charge.order_id` 需要医嘱的自增主键回填，而 `INSERT ... VALUES(),() RETURNING id` 无法通过 MyBatis 可靠按序取回多 id，收益不抵风险。已留 `TODO(P3)`（`reWriteBatchedInserts=true` + `ExecutorType.BATCH`） |
-| R-18 | `VisitService.list()` 在 `currentDeptId==null` 且非 admin 时返回空列表 + 告警 | 循环内全表扫描的 O(V×O) 算法未优化（P1） |
-| R-33 | `/actuator/**` 移出 permitAll | Swagger 仍放行（开发依赖），生产关闭排 P2 |
-| R-34 | 改密/重置吊销已实现 | `?token=` query 回退未动（SSE 依赖 `EventSource`，P2） |
-| R-45 | 登录失败锁定/限流已落地（BCrypt 提 cost 的前置条件） | BCrypt cost 仍为 10，提升到 12 排 P1 |
+| R-33 | `/actuator/**` 移出 permitAll | Swagger / OpenAPI 仍放行（开发依赖，生产关闭未做） |
+| R-34 | 改密 / 重置吊销已实现 | `?token=` query 回退未动（SSE 依赖 `EventSource`） |
+| R-47 | `book()` 的并发与幂等已补（含真实 PG 并发用例） | 号源生成 / 过期清理 / 状态机用例仍缺 |
 
 ### 附带修复（原报告未列项）
 
@@ -89,12 +88,23 @@
 
 ### 遗留（本轮新发现的后续项，均非原报告条目）
 
+- **R-62【Critical，审核漏项】文件下载的归属校验可被自身列表接口绕过，且网关把内部令牌无差别发给所有调用者**。
+  - **证据链**：
+    1. `hospital-gateway` 的 `SecurityConfig` 是 `@Profile("!iam")` + `anyExchange().permitAll()`，而**全仓不存在 `application-iam.yml`**、`application.yml` 里也没有 `spring.profiles.active=iam` → 网关**实际永远**运行在"全部放行"分支（`SecurityConfig.java:16-24`）；
+    2. 我为 R-03 加的网关过滤器是 `AddRequestHeader=X-Internal-Token, ...`（`gateway/application.yml` 的 `hospital-file` 路由），它对**所有**匹配 `/api/files/**` 的请求注入令牌，**不区分调用者身份** → 在默认部署下"内部令牌"不构成任何安全边界，只防"绕过网关直连 8103"；
+    3. `FileController.list()` / `mine()` 的 `patientId` 仍是 `required = false`（`FileController.java:166-178`），**不传就返回全部对象**，且 `FileMeta` 里带着每个对象的 `patientId`（`FileController.java:180-199`）；
+    4. `download()` 的归属校验是"调用方自报的 `patientId` vs 对象元数据"（`FileController.java:140-146`）。
+  - **利用步骤**：匿名 → `GET /api/files`（不带任何参数）拿到全部 `objectName` + `patientId` → 带着该 `patientId` 请求 `GET /api/files/{objectName}?patientId=<上一步拿到的>` → 校验通过 → 拿到患者报告 PDF。
+  - **后果**：**未认证用户可枚举并下载全部患者报告。** 我原先给 R-03 定"已修复"是过度乐观 —— 单看 `download` 的改动是对的，但 `list` 把校验所需的"钥匙"（patientId ↔ objectName 的对应关系）直接送了出去，纵深防御等于没有。
+  - **修复方向（即原「决策 4 方案 A」，性质从"锦上添花"上调为"必须做"）**：撤掉网关 `/api/files/**` 路由，upload / list / download 一律改由 core 代理（复用已有的 `FileServiceClient` 与 `PatientController.downloadReport` 的归属校验），让 file-service 只在内网可达；同时 `list()` 的 `patientId` 改为必填。
+  - **同源简化方案（若暂不做代理）**：`FileController.list/mine` 的 `patientId` 改必填（最小止血，但令牌仍无差别发放，边界依旧不存在）。
+- **R-63【High，审核漏项】`VisitService.listExams()` 循环内逐行 `visitMapper.selectById`**（`VisitService.java:781-787`）：先全量加载 EXAM 医嘱，再对每条回查就诊/患者/医生。属 R-19 同类 N+1，但位置不在 R-19 列的三个类里，故未被覆盖。修法与 R-19 一致（批量 `selectBatchIds` + 分组）。
 - **R-21 医嘱批量写入**（部分完成）：收费记录已批量化，医嘱因需回填自增主键给 `charge.order_id` 而保持逐条，已留 `TODO(P3)`
 - **R-39 暴露的类型债**：开启按需引入后若生成 `components.d.ts`，`vue-tsc` 会立刻暴露 **34 个既有类型问题**（`el-table` 作用域插槽的 row 被推断为 `DefaultRow`、`el-tag :type` 传入了含空串的联合类型）。本轮为守住"type-check 0 错误"基线关闭了 dts 生成；修完这 34 处即可打开，换取组件级类型安全
 - **R-56 的行为变化**：改 sessionStorage 后**新开标签页不再共享登录态**（单标签刷新仍免登）。这是收窄 XSS 窗口的代价，两全需 httpOnly Cookie + CSRF（P3）
 - **R-60 的运维项**：容器 / CI（ubuntu）无中文字体，PDF 中文会走降级（方框）。建议镜像挂载字体或设置 `PDF_FONT_PATH`
 - **R-47 未覆盖部分**：`BookingService` 的号源生成 / 过期清理 / 状态机用例仍缺（只补了并发与幂等）
-- **下一迭代**：决策 4 方案 A —— 撤掉网关 `/api/files` 路由、改由 core 代理 upload/list，让 file-service 真正退到内网（当前有方案 B 顶着）
+- **决策 4 方案 A（已上调为必须做）**：见上方 R-62 —— 它不只是"让 file-service 退到内网"的治本优化，而是关闭"匿名枚举 + 下载全部患者报告"这条通路的**唯一有效手段**（方案 B 的网关注入令牌对匿名调用者同样生效，起不到身份区分作用）
 - **决策 1 结论**：不开放 `/visits/page`、`/reports/list`、`/reports/type` 给患者，也不新建 `/mine`。C 端能力一律走 `PatientController` 下自带归属校验的专用端点（`/api/patient/reports` 等），已可满足现有 `patient/*` 全部页面
 
 ### 新增运维依赖（部署清单必须同步）
@@ -123,7 +133,7 @@
 
 ## 二、Critical 问题（6 条）
 
-> **状态**：R-01 ✅ ｜ R-02 ✅ ｜ R-03 ✅ ｜ R-04 ✅（47 条索引）｜ R-05 ✅（全表扫描下推 WHERE）｜ R-06 ✅（金额校验 + 精度）—— **6 项全部完成**
+> **状态**：R-01 ✅ ｜ R-02 ✅ ｜ R-03 ⚠️ **降级为部分修复**（详见 R-62）｜ R-04 ✅（47 条索引）｜ R-05 ✅（全表扫描下推 WHERE）｜ R-06 ✅（金额校验 + 精度）—— **5 项完成、1 项部分修复**
 
 ### R-01 JWT 签名密钥硬编码为公开默认值，可自签任意身份令牌
 - **维度** 安全（SEC-01）｜**共识** 三方无异议
