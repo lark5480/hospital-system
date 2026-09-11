@@ -5,8 +5,8 @@
 - **参与 Agent**：SECURITY（安全）、PERFORMANCE（性能）、TESTING（测试质量）
 - **流程**：第 1 轮三方独立审查 → 第 2 轮交叉质询（反驳 / 降级 / 升级 / 补充 / 自我修正 / 预判辩护）→ 第 3 轮主席收敛
 - **产出**：61 条问题（6 Critical / 22 High / 26 Medium / 7 Low），含 8 条质询后新增、9 条质询后改级
-- **实施状态（2026-09-11 更新）**：P0 + P1 + P2 已全部落盘；复核中发现的 3 条审核漏项（R-62 Critical / R-63 High / R-64 High）已修复；原先 5 条「部分修复」（R-11 / R-21 / R-33 / R-34 / R-47）亦已收尾 —— 合计 64 条：**63 项已修复、1 项已缓解、0 项部分修复**。
-- **验证覆盖**：后端 334 用例（core 284 / notification 24 / file-service 20 / gateway 6）+ 前端 19 用例全绿，前端 `type-check` 与构建通过；**两条浏览器端到端链路已于 2026-09-11 在本地真实环境执行**：① 体检预约 → 分诊排队 → 自助取消 → 看板联动；② 新建就诊 → 加检验医嘱 → 确单自动生成检验申请 → 追加医嘱自动并入同一申请（含检验科账号可见性验证、草稿态不发事件的反向守护、以及**对账任务在真实 10 分钟边界自行触发并补建 + 留痕**）。唯一未做压测验证的是 R-29（靠根因治理间接缓解，见「遗留」）。详见下方「实施状态总览」
+- **实施状态（2026-09-11 更新）**：P0 + P1 + P2 已全部落盘；复核 / 实测中发现的 4 条审核漏项（R-62 Critical / R-63 High / R-64 High / R-65 Medium）已修复；原先 5 条「部分修复」（R-11 / R-21 / R-33 / R-34 / R-47）亦已收尾 —— 合计 65 条：**64 项已修复、1 项已缓解、0 项部分修复**。
+- **验证覆盖**：后端 336 用例（core 285 / notification 25 / file-service 20 / gateway 6）+ 前端 19 用例全绿，前端 `type-check` 与构建通过；**两条浏览器端到端链路已于 2026-09-11 在本地真实环境执行**：① 体检预约 → 分诊排队 → 自助取消 → 看板联动；② 新建就诊 → 加检验医嘱 → 确单自动生成检验申请 → 追加医嘱自动并入同一申请（含检验科账号可见性验证、草稿态不发事件的反向守护、以及**对账任务在真实 10 分钟边界自行触发并补建 + 留痕**）。唯一未做压测验证的是 R-29（靠根因治理间接缓解，见「遗留」）。详见下方「实施状态总览」
 - **定级标准**：
   - **Critical**：可直接导致批量敏感数据泄露 / 权限完全失守，或线上必然不可用
   - **High**：需要低门槛前置条件即可造成实质损害，或数据量到 10 万级必然劣化到不可用
@@ -88,9 +88,9 @@
 | `StaffView.vue` 既有编译错误 | `patientApi.resetPassword` → `resetPatientPassword`；`Staff` 类型补 `userId` |
 | 403 无统一提示 | `http.ts` 补 403 中文提示；401 时不再重复跳转登录页 |
 
-### 复核中发现的审核漏项（R-62 / R-63 —— 均已修复）
+### 复核中发现的审核漏项（R-62 / R-63 / R-64 / R-65 —— 均已修复）
 
-> 这两条不在原 61 条内，是在回答「待拍板 5 件事」时复核代码发现的。R-62 是 Critical 且**匿名可利用**，已按原「决策 4 方案 A」落地（该方案的定性同时从"治本优化"上调为"唯一有效修法"）。
+> 这几条不在原 61 条内，是在回答「待拍板 5 件事」时复核代码、以及本地真实环境联调时发现的。R-62 是 Critical 且**匿名可利用**，已按原「决策 4 方案 A」落地（该方案的定性同时从"治本优化"上调为"唯一有效修法"）；R-65 则是做 SSE 端到端实测时，从服务端日志里抓到的运行时错误。
 
 - **R-62【Critical】文件下载的归属校验可被自身列表接口绕过，且网关把内部令牌无差别发给所有调用者**。
   - **证据链（修复前）**：
@@ -134,6 +134,20 @@
     动作名沿用 Controller 路径的 `CREATE_REQUISITION` / `CREATE_PRESCRIPTION`，既有审计查询口径不变；**写入放在生成成功之后**，避免"审计说建了、库里没有"。事件新增 `Trigger` 字段承载触发原因（回答"同一张就诊单为什么会有两张申请"）。**注意** `AuditRecorder` 必须放 `platform.infrastructure` 而非 `support` —— 它要访问 `platform.domain.AuditLog`，而 ArchUnit 分层规则只允许 api/application/infrastructure 访问 domain（放 support 直接构建失败）。
   - **行为变化（需知悉）**：`POST /api/lab/requisitions`、`/api/pharmacy/prescriptions` 在"无新医嘱"时由 409/异常改为 **200 + 既有单据**（前端已不再调用这两个接口，但仍可用作手工补建）。
   - **验证**：`VisitConfirmDownstreamIntegrationTest`（4 例，**不带 `@Transactional`** —— 否则 AFTER_COMMIT 监听器根本不触发、单测会给出假绿）覆盖确单生成、追加并入同一申请、无医嘱不建空申请、以及对账 SQL 补建；另有 `VisitServiceDownstreamEventTest`（7 例，两个触发点 + 反向守护：草稿态与 EXAM 不发事件）、两个监听器单测（10 例，跳过/透传/异常不外抛）、`DownstreamDocReconcileJobTest`（4 例，含"单张失败不影响其它"）、幂等用例 2 例。
+- **R-65【Medium】SSE 长连接超时后的 ASYNC 派发被再次鉴权：服务端日志刷 ERROR，并连带把 `/error` 的 ERROR 派发也判死**。
+  - **发现方式**：不是读代码读出来的，而是 R-34（SSE 短期 ticket）落地后做端到端实测时抓到的 —— `curl -N` 订阅看板 SSE，满 60s（`SseEmitter` 超时）后服务端日志出现 `ERROR ... Unable to handle the Spring Security Exception because the response is already committed`。
+  - **完整链路**：① 前端凭 ticket 订阅 → 拿到 `SseEmitter`（超时 60s）；② 60s 后容器超时 → `WebAsyncManager` "Performing async dispatch"，以 `DispatcherType.ASYNC` **重新进入 Servlet 过滤器链**；③ 此时 `SecurityContextHolder` 已随首次 REQUEST 派发结束而清空，而 `JwtAuthFilter` / `SseTicketAuthFilter` 都是 `OncePerRequestFilter`（默认跳过 ASYNC 派发）→ 这次派发在授权看来是**匿名**；④ `AnonymousAuthenticationFilter` 装入匿名上下文 → `AuthorizationFilter` 判 `AccessDeniedException`，但响应此刻已提交 → `ExceptionTranslationFilter` 只能抛 "Unable to handle the Spring Security Exception because the response is already committed"，且该异常经 `/error` 的 ERROR 派发时又被判一次 401/403，刷出第二条 ERROR。
+  - **为什么「把 ticket TTL 拉长」治不了**：ASYNC 派发本身不携带任何凭证（自定义过滤器不参与该派发），问题与 ticket 有效期无关；调大 TTL 只是掩盖症状。
+  - **修复**：`hospital-core` 与 `hospital-notification-service` 的每一条 `authorizeHttpRequests` 首条规则改为 `auth.dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll();`。
+  - **为什么放行是安全的**：ASYNC 派发无法被外部凭空发起，它只能是「已经通过 REQUEST 派发授权的那次请求」的延续（`DispatcherServlet` 不会重新调用 Controller 方法），再次要求认证只是重复评估、不新增任何保护；ERROR 派发放行是为让错误页本身不被 401/403 掩盖（仅对 ERROR 派发生效，直接以 REQUEST 访问 `/error` 仍需认证）。
+  - **守护测试**：core 新增 `SecurityConfigAsyncDispatchTest`（修复前实测 401 → 修复后放行），notification 的 `SecurityConfigTest` 补同型用例；两侧都用**不存在的探针路径**断言 ASYNC 派发不返回 401/403，避免用例真的去建立一条 SSE 连接、留下副作用。
+  - **实测前后对照（本地真机、同一订阅动作、过 60s 超时点）**：
+
+    | 观测点 | 修前 | 修后 |
+    |---|---|---|
+    | 超时点服务端日志 | `ERROR ... threw exception [Unable to handle the Spring Security Exception because the response is already committed]` + `AccessDeniedException` + `Exception Processing [ErrorPage[... location=/error]]` | 无 ERROR/WARN（仅 `WebAsyncManager: Performing async dispatch` 的 DEBUG） |
+    | 客户端 `curl -N` | `curl: (18) transfer closed with outstanding read data remaining`（流被异常打断） | 心跳正常输出、到点干净结束，curl 无报错 |
+
 - **R-39 暴露的类型债**：开启按需引入后若生成 `components.d.ts`，`vue-tsc` 会立刻暴露 **34 个既有类型问题**（`el-table` 作用域插槽的 row 被推断为 `DefaultRow`、`el-tag :type` 传入了含空串的联合类型）。本轮为守住"type-check 0 错误"基线关闭了 dts 生成；修完这 34 处即可打开，换取组件级类型安全
 - **R-56 的行为变化**：改 sessionStorage 后**新开标签页不再共享登录态**（单标签刷新仍免登）。这是收窄 XSS 窗口的代价，两全需 httpOnly Cookie + CSRF（P3）
 - **R-60 的运维项**：容器 / CI（ubuntu）无中文字体，PDF 中文会走降级（方框）。建议镜像挂载字体或设置 `PDF_FONT_PATH`

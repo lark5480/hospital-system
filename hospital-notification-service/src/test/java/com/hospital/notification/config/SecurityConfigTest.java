@@ -13,6 +13,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.test.web.servlet.MockMvc;
 
+import jakarta.servlet.DispatcherType;
+
 /**
  * R-11:通知服务安全配置守护测试。
  *
@@ -96,5 +98,21 @@ class SecurityConfigTest {
         var result = mockMvc.perform(get("/api/notify/subscribe")).andReturn();
 
         assertThat(result.getResponse().getStatus()).isEqualTo(401);
+    }
+
+    @Test
+    @DisplayName("R-65:未认证的 ASYNC 派发必须放行(SSE 60s 超时后容器会自动发起,响应已提交)")
+    void asyncDispatchWithoutAuthenticationShouldNotBeReauthorized() throws Exception {
+        // 与 hospital-security 同一缺陷:ASYNC 派发已无 SecurityContext,若再判 401/403,
+        // 真实环境下响应已提交 → "Unable to handle the Spring Security Exception" 刷 ERROR。
+        // 探针路径刻意不存在:放行后授权通过、以 404 收场,不会真的建立 SSE 连接。
+        var result = mockMvc.perform(get("/api/notify/__async-dispatch-probe__").with(request -> {
+            request.setDispatcherType(DispatcherType.ASYNC);
+            return request;
+        })).andReturn();
+
+        assertThat(result.getResponse().getStatus())
+                .as("ASYNC 派发是已授权请求的延续,不得被再次鉴权")
+                .isNotIn(401, 403);
     }
 }

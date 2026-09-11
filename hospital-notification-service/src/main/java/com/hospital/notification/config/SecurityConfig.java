@@ -6,6 +6,8 @@ import java.util.Locale;
 
 import javax.crypto.spec.SecretKeySpec;
 
+import jakarta.servlet.DispatcherType;
+
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -52,6 +54,13 @@ import lombok.extern.slf4j.Slf4j;
  *   <li><b>其余端点链</b>({@link #apiFilterChain}):健康检查 / 探活匿名放行,其余一律 {@code authenticated()}。</li>
  * </ul>
  * 两条链都保持 {@code csrf disabled} + {@code STATELESS}。
+ *
+ * <p><b>R-65</b>:两条链都放行 {@code ASYNC} / {@code ERROR} 派发。SSE 的 60s 超时会让容器以
+ * {@code DispatcherType.ASYNC} 重新进入过滤器链,而这次派发已经没有 SecurityContext(SecurityContextHolder
+ * 随首次 REQUEST 派发结束清空,{@code QueryTicketBearerFilter} / {@code BearerTokenAuthenticationFilter}
+ * 又都跳过 ASYNC 派发),授权会判为匿名 → {@code AccessDeniedException} + 响应已提交
+ * → "Unable to handle the Spring Security Exception"。ASYNC 派发无法被外部凭空发起,只能是已授权请求的
+ * 延续,故放行;ERROR 派发放行以免错误页被 401/403 掩盖。见 {@code SecurityConfigTest}。
  *
  * <p><b>为什么订阅链单独一条</b>:ticket 会出现在 URL 上(浏览器历史 / 网关 access log / Referer),
  * 一旦泄漏也不应被当作普通令牌使用。两条链各挂一个定制 JWT 解码器,把这个不变式做成硬约束:
@@ -227,6 +236,11 @@ public class SecurityConfig {
             .csrf(AbstractHttpConfigurer::disable)
             .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> {
+                // R-65: ASYNC / ERROR 派发放行 —— 与 hospital-core 同一处缺陷、同一修法。
+                // SSE(SseEmitter)60s 超时后容器以 ASYNC 派发重新进入本链,此时已无 SecurityContext,
+                // 授权会把它当匿名 → 响应已提交后刷 "Unable to handle the Spring Security Exception",
+                // 并连带把 /error 的 ERROR 派发也判死。ASYNC 派发只能是已授权请求的延续,故放行。
+                auth.dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll();
                 // R-11: EventSource 预检放行,避免被打断
                 auth.requestMatchers(HttpMethod.OPTIONS, "/**").permitAll();
                 if (authEnabled()) {
@@ -259,6 +273,9 @@ public class SecurityConfig {
             .csrf(AbstractHttpConfigurer::disable)
             .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> {
+                // R-65: 订阅链之外的 ERROR 派发(容器转发到 /error)同样不得被 401/403 掩盖,
+                // 否则异常处理器自身抛错会再触发一次"响应已提交"的 ERROR。见 sseSubscribeFilterChain。
+                auth.dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll();
                 // R-11: CORS 预检放行
                 auth.requestMatchers(HttpMethod.OPTIONS, "/**").permitAll();
                 // R-11: 健康检查 / 探活免鉴权

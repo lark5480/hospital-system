@@ -24,6 +24,7 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import jakarta.servlet.DispatcherType;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -40,6 +41,10 @@ import lombok.extern.slf4j.Slf4j;
  *       此外 Swagger / OpenAPI 文档在生产环境不再匿名放行(见 {@link #swaggerPermitMatchers()})。
  * R-34: 新增 {@link SseTicketAuthFilter},把 SSE 订阅凭证从"长期 JWT(query token)"改为
  *       "60 秒短期 ticket(query ticket)",并注册在原 {@link JwtAuthFilter} 之后。
+ * R-65: ASYNC / ERROR 派发放行(见 {@code authorizeHttpRequests} 首条规则)。SSE 的 60s 超时会让容器
+ *       以 ASYNC 派发重新进入过滤器链,而该次派发已无 SecurityContext、自定义过滤器又默认跳过 ASYNC,
+ *       授权会把它当匿名拒绝 —— 修复前表现为响应已提交后刷 "Unable to handle the Spring Security
+ *       Exception"。守护测试:{@code SecurityConfigAsyncDispatchTest}。
  *
  * 未来接外部 IdP 时,只需把 login 接口改为"校验外部 token → 换签自有 JWT",
  * 过滤器与 SecurityConfig 不动。
@@ -138,6 +143,17 @@ public class SecurityConfig {
             .csrf(AbstractHttpConfigurer::disable)
             .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> {
+                // R-65: ASYNC / ERROR 派发放行。
+                // 为什么必须放行:SSE(SseEmitter)超时后,容器会以 DispatcherType.ASYNC 把这次请求
+                // 重新派发回过滤器链,而此刻 SecurityContextHolder 已随首次 REQUEST 派发结束而清空,
+                // JwtAuthFilter / SseTicketAuthFilter 又是 OncePerRequestFilter(默认跳过 ASYNC),
+                // 于是这次派发在授权看来是匿名 → AuthorizationFilter 判 AccessDeniedException,
+                // 响应却已提交 → "Unable to handle the Spring Security Exception because the response
+                // is already committed" 刷 ERROR,并连带把 /error 的 ERROR 派发也判死。
+                // 为什么安全:ASYNC 派发无法由外部凭空发起,只能是"已通过 REQUEST 授权的那次请求"的延续
+                // (控制器方法不会被重新调用),再次鉴权只会重复评估、不新增保护;ERROR 派发放行则是为了让
+                // 错误页不被 401/403 掩盖(仅对 ERROR 派发生效,直接以 REQUEST 访问 /error 仍需认证)。
+                auth.dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll();
                 // R-02/R-33: 已移除 "/fhir/**" 与 "/actuator/**" 的匿名放行
                 auth.requestMatchers("/api/auth/**").permitAll();
                 // R-33: 仅非生产环境匿名放行 swagger 文档
