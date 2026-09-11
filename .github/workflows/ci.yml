@@ -62,3 +62,47 @@ jobs:
 
       - name: Build & Test (含 ArchUnit 架构红线)
         run: mvn -B clean verify
+
+      # R-26: 保留覆盖率报告，便于在 PR 里直接下载查看趋势
+      # (hospital-core 绑定了 jacoco-maven-plugin: prepare-agent + report + check)
+      - name: Upload JaCoCo coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-hospital-core
+          path: hospital-core/target/site/jacoco
+          if-no-files-found: warn
+
+  # R-55: 前端门禁。与上面的 Java 作业并列(无 needs)，互不阻塞、互不等待。
+  frontend:
+    name: Frontend type-check
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: hospital-web
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: hospital-web/package-lock.json
+
+      - name: Install dependencies
+        # hospital-web/package-lock.json 已存在，故用可复现的 npm ci
+        run: npm ci
+
+      # 已知现状(2026-09-10 本地实测)：npm run type-check 当前有 24 个历史 TS 错误
+      # (src/api/lab.ts 缺 LabRequisition 类型、VisitDetailView.vue 大量 store.detail possibly null 等)，
+      # 该作业首次运行会是红色。这是"存量债被照出来"，不是本次改动引入的。
+      # 若需要一段软着陆期(先可见、后卡口)，在本作业下加一行 continue-on-error: true 即可；
+      # 当前按 R-55 诉求保持为真门禁，否则类型错误仍能一路进 main。
+      - name: Type check (vue-tsc --noEmit)
+        run: npm run type-check
+
+      # 注意：hospital-web/package.json 目前没有 test 脚本，这里不要写 npm test(会直接失败)。
+      # 待前端引入 vitest(需主席确认是否允许新增 devDependency)后，在此补充一步 "npm run test"。

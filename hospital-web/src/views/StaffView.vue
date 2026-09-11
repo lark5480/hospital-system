@@ -117,7 +117,7 @@ async function handleResetPassword(row: Staff) {
       '重置密码',
       { confirmButtonText: '确认重置', cancelButtonText: '取消', type: 'warning' }
     )
-    await patientApi.resetPassword(row.userId)
+    await patientApi.resetPatientPassword(row.userId)
     ElMessage.success('密码已重置为 123456')
   } catch (e: any) {
     if (e !== 'cancel') {

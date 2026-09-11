@@ -1,8 +1,18 @@
 package com.hospital.core.pharmacy.application;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
@@ -18,7 +28,11 @@ import com.hospital.core.clinical.domain.VisitStatusEvent;
 import com.hospital.core.clinical.infrastructure.ChargeMapper;
 import com.hospital.core.clinical.infrastructure.OrderMapper;
 import com.hospital.core.org.application.StaffService;
+import com.hospital.core.org.domain.Staff;
+import com.hospital.core.org.infrastructure.StaffMapper;
 import com.hospital.core.patient.application.PatientService;
+import com.hospital.core.patient.domain.Patient;
+import com.hospital.core.platform.support.NameCache;
 import com.hospital.core.pharmacy.domain.Prescription;
 import com.hospital.core.pharmacy.domain.PrescriptionItem;
 import com.hospital.core.pharmacy.infrastructure.PrescriptionItemMapper;
@@ -49,6 +63,12 @@ public class PrescriptionService {
     private final StaffService staffService;
     private final ApplicationEventPublisher eventPublisher;
 
+    // R-19: 名称解析缓存 + 员工批量查询(字段注入,不改构造签名,兼容既有单测直接 new)
+    @Autowired(required = false)
+    private NameCache nameCache;
+    @Autowired(required = false)
+    private StaffMapper staffMapper;
+
     /**
      * 监听临床医嘱修改事件:同步更新对应 PENDING 处方明细的快照(名称/数量/单价)。
      * 医生二次修改药品医嘱后,处方明细随之更新,避免发药时仍显示旧药品名称。
@@ -66,6 +86,17 @@ public class PrescriptionService {
             item.setUnitPrice(event.unitPrice());
             itemMapper.updateById(item);
         }
+    }
+
+    /**
+     * R-64 对账辅助:列出需要补建处方的就诊单 ID
+     * (已确单但仍有药品医嘱未被任何处方覆盖 —— 见 {@link PrescriptionItemMapper#selectVisitIdsWithUncoveredMedicationOrders()})。
+     *
+     * <p>只读,自身不开事务。补建由调用方({@code DownstreamDocReconcileJob})<b>逐单</b>调用
+     * {@link #createFromVisit},这样每张就诊单各自一个事务,单张失败不会拖垮整轮对账。
+     */
+    public List<Long> findVisitIdsNeedingReconcile() {
+        return itemMapper.selectVisitIdsWithUncoveredMedicationOrders();
     }
 
     /** 从就诊的药品医嘱创建处方(只取 status=CREATED 的医嘱)。创建后同时确单锁定就诊单。
@@ -98,8 +129,11 @@ public class PrescriptionService {
                     .filter(o -> !existingOrderIds.contains(o.getId()))
                     .toList();
 
+            // R-64: 由"抛异常"改为幂等返回。理由同 LabService#createFromVisit ——
+            // 本方法现在还会被 VisitConfirmedPrescriptionListener(事件重投)与对账任务调用,
+            // 对它们而言"没有新药品医嘱"是正常的无事可做,抛异常只会制造假错误。
             if (newOrders.isEmpty()) {
-                throw new IllegalStateException("该就诊无可追加的药品医嘱");
+                return existingPending;
             }
 
             for (Order o : newOrders) {
@@ -282,22 +316,117 @@ public class PrescriptionService {
         return resolveStaffName(doctorId);
     }
 
-    /** 查询处方列表(含患者和医生名称),可按状态筛选、关键字(患者/医生)搜索。 */
+    /**
+     * 查询处方列表(含患者和医生名称),可按状态筛选、关键字(患者/医生)搜索。
+     *
+     * <p>R-19: 消除名称解析 N+1 —— 原实现"每条处方查 1 次明细 + 各解析 1 次患者/医生/药师名",
+     * 现改为:1 次批量查明细 + NameCache 批量解析患者/员工姓名(命中零查询)。出参与字段不变。
+     */
     public List<PrescriptionDetail> listWithDetail(String status, String keyword) {
         List<Prescription> list = list(status);
-        return list.stream().map(p -> {
-            List<PrescriptionItem> items = itemMapper.selectList(
-                    new LambdaQueryWrapper<PrescriptionItem>()
-                            .eq(PrescriptionItem::getPrescriptionId, p.getId()));
-            return new PrescriptionDetail(p, items,
-                    resolvePatientName(p.getPatientId()),
-                    resolveDoctorName(p),
-                    resolveStaffName(p.getPharmacistId()));
-        }).filter(d -> {
-            if (keyword == null || keyword.isBlank()) return true;
-            String kw = keyword.toLowerCase();
-            return (d.getPatientName() != null && d.getPatientName().toLowerCase().contains(kw))
-                    || (d.getDoctorName() != null && d.getDoctorName().toLowerCase().contains(kw));
-        }).toList();
+        if (list.isEmpty()) {
+            return List.of();
+        }
+
+        List<Long> prescriptionIds = list.stream()
+                .map(Prescription::getId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        // 1 次批量查明细(原:每条处方各查一次)
+        List<PrescriptionItem> allItems = prescriptionIds.isEmpty() ? List.of()
+                : itemMapper.selectList(new LambdaQueryWrapper<PrescriptionItem>()
+                        .in(PrescriptionItem::getPrescriptionId, prescriptionIds));
+        Map<Long, List<PrescriptionItem>> itemsByRx = allItems.stream()
+                .filter(i -> i.getPrescriptionId() != null)
+                .collect(Collectors.groupingBy(PrescriptionItem::getPrescriptionId));
+
+        // 批量解析患者姓名(仅查缓存缺失的 id)
+        Set<Long> patientIds = list.stream()
+                .map(Prescription::getPatientId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<Long, String> patientNames = loadNames("patient", patientIds, this::batchLoadPatientNames);
+
+        // 医生 ID:处方未记录时回退就诊单医生(历史数据,罕见);医生与药师同属 org.staff,合并一次批量解析
+        Map<Long, Long> doctorIdByRx = new HashMap<>();
+        Set<Long> staffIds = new HashSet<>();
+        for (Prescription p : list) {
+            Long doctorId = p.getDoctorId();
+            if (doctorId == null && p.getVisitId() != null) {
+                var v = visitService.get(p.getVisitId());
+                if (v != null) {
+                    doctorId = v.getDoctorId();
+                }
+            }
+            doctorIdByRx.put(p.getId(), doctorId);
+            if (doctorId != null) {
+                staffIds.add(doctorId);
+            }
+            if (p.getPharmacistId() != null) {
+                staffIds.add(p.getPharmacistId());
+            }
+        }
+        Map<Long, String> staffNames = loadNames("staff", staffIds, this::batchLoadStaffNames);
+
+        return list.stream().map(p -> new PrescriptionDetail(p,
+                        itemsByRx.getOrDefault(p.getId(), List.of()),
+                        patientNames.get(p.getPatientId()),
+                        staffNames.get(doctorIdByRx.get(p.getId())),
+                        staffNames.get(p.getPharmacistId())))
+                .filter(d -> {
+                    if (keyword == null || keyword.isBlank()) return true;
+                    String kw = keyword.toLowerCase();
+                    return (d.getPatientName() != null && d.getPatientName().toLowerCase().contains(kw))
+                            || (d.getDoctorName() != null && d.getDoctorName().toLowerCase().contains(kw));
+                }).toList();
+    }
+
+    /** R-19: 名称批量解析 —— 命中缓存零查询,缺失的 id 走底层一次 IN 查询。 */
+    private Map<Long, String> loadNames(String type, Collection<Long> ids,
+                                        Function<Collection<Long>, Map<Long, String>> loader) {
+        if (ids == null || ids.isEmpty()) {
+            return Map.of();
+        }
+        try {
+            if (nameCache != null) {
+                return nameCache.getOrLoadAll(type, ids, loader);
+            }
+            return loader.apply(ids);   // 无上下文(纯单测)时退化为直接批量加载
+        } catch (Exception e) {
+            return Map.of();
+        }
+    }
+
+    /** R-19: 批量解析患者姓名(patientService.listByIds 底层一条 IN 查询)。 */
+    private Map<Long, String> batchLoadPatientNames(Collection<Long> ids) {
+        Map<Long, String> result = new HashMap<>();
+        for (Patient p : patientService.listByIds(new ArrayList<>(ids))) {
+            if (p != null && p.getId() != null && p.getName() != null) {
+                result.put(p.getId(), p.getName());
+            }
+        }
+        return result;
+    }
+
+    /** R-19: 批量解析员工姓名(StaffMapper.selectBatchIds 底层一条 IN 查询)。 */
+    private Map<Long, String> batchLoadStaffNames(Collection<Long> ids) {
+        Map<Long, String> result = new HashMap<>();
+        if (staffMapper != null) {
+            for (Staff s : staffMapper.selectBatchIds(new ArrayList<>(ids))) {
+                if (s != null && s.getId() != null && s.getName() != null) {
+                    result.put(s.getId(), s.getName());
+                }
+            }
+            return result;
+        }
+        // 无 Mapper(纯单测)时回退到 service 层逐条查询,保证功能不缺失
+        for (Long id : ids) {
+            Staff s = staffService.get(id);
+            if (s != null && s.getName() != null) {
+                result.put(id, s.getName());
+            }
+        }
+        return result;
     }
 }

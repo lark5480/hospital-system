@@ -4,12 +4,23 @@ server:
 spring:
   application:
     name: hospital-file-service
+  # R-30: 上传大小硬上限,防止超大文件打爆内存/MinIO(原为默认 1MB 且无显式约束)
+  servlet:
+    multipart:
+      max-file-size: 20MB
+      max-request-size: 20MB
 
 minio:
   endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
   access-key: ${MINIO_ACCESS_KEY:minioadmin}
   secret-key: ${MINIO_SECRET_KEY:minioadmin}
   bucket: hospital
+
+# R-03: 内部调用令牌(core → file-service;R-62 起网关不再持有也不再代发该令牌)。
+# 生产必须注入环境变量 FILE_INTERNAL_TOKEN(如 openssl rand -base64 32);
+# 为空时 InternalTokenFilter 放行并打印 WARN(保证本地零配置可跑),生产严禁留空。
+file:
+  internal-token: ${FILE_INTERNAL_TOKEN:}
 
 logging:
   level:

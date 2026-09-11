@@ -10,6 +10,20 @@ spring:
     username: ${RABBIT_USER:admin}
     password: ${RABBIT_PASSWORD:admin123}
 
+# R-35: 通知服务允许的跨域来源(逗号分隔)。
+# 默认只放行本机开发端口;生产必须显式配置为真实前端域名,严禁使用 *。
+app:
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:*}
+  # R-11: 校验 SSE ticket 用的 JWT 签名密钥 —— 必须与 hospital-core 的 APP_JWT_SECRET 为同一把。
+  # 派生方式与 core 一致:secret 的 UTF-8 原始字节作为 HMAC-SHA256 密钥(不做 Base64 解码)。
+  # 三档行为(见 SecurityConfig 类注释):prod 未配置 → 启动失败;非 prod 未配置 → 放行 + WARN(仅本地开发);
+  # 已配置 → 严格校验。生产必须注入。
+  jwt:
+    secret: ${APP_JWT_SECRET:}
+
 logging:
+  # R-24: 由 debug 降为 info —— SSE 连接的心跳与广播日志在 DEBUG 下会高频刷盘,
+  # 且日志内容含患者姓名等 PHI。排障时用 --logging.level.com.hospital=debug 临时打开。
   level:
-    com.hospital: debug
+    com.hospital: info

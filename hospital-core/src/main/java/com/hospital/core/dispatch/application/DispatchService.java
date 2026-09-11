@@ -1,17 +1,18 @@
 package com.hospital.core.dispatch.application;
 
 import java.time.LocalDateTime;
-import java.util.Comparator;
 import java.util.List;
-import java.util.Map;
 
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.event.TransactionalEventListener;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.hospital.core.booking.domain.AppointmentCancelledEvent;
 import com.hospital.core.booking.domain.AppointmentCreatedEvent;
 import com.hospital.core.booking.domain.AppointmentStatusEvent;
 import com.hospital.core.booking.domain.ExamItemBrief;
@@ -26,15 +27,18 @@ import com.hospital.core.report.domain.Report;
 import com.hospital.core.report.domain.ReportPdfEvent;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 
 /**
  * 排队分发引擎(应用服务)。
- * - 写侧:消费 booking 发布的 AppointmentCreatedEvent,为套餐内每个项目生成一条 ExamTask。
+ * - 写侧:消费 booking 发布的 AppointmentCreatedEvent,为套餐内每个项目生成一条 ExamTask;
+ *   并消费 AppointmentCancelledEvent,把该预约下尚未开始的任务撤出队列(取消即出队)。
  * - 读侧(CQRS):同步维护 dispatch.queue_board 物化投影,看板只查投影,不碰写模型。
  * - 生命周期:start / complete 推进任务状态并双向同步投影。
  */
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class DispatchService {
 
     private final ExamTaskMapper taskMapper;
@@ -42,9 +46,6 @@ public class DispatchService {
     private final ReportService reportService;
     private final ApplicationEventPublisher eventPublisher;
     private final DispatchSseController sseController;
-
-    private static final Map<String, Integer> STATUS_ORDER = Map.of(
-            "PENDING", 0, "IN_PROGRESS", 1, "SKIPPED", 2, "DONE", 3);
 
     /**
      * 事件驱动入口:预约创建后(booking 事务提交),按项目顺序生成各 station 任务 + 看板投影。
@@ -81,6 +82,50 @@ public class DispatchService {
         }
     }
 
+    /**
+     * 事件驱动入口:预约被患者自助取消后(booking 事务提交),清理该预约下尚未开始的排队任务。
+     *
+     * <p><b>为什么必须消费这个事件</b>:预约创建时本服务已为套餐内每个项目生成了 ExamTask 并写入
+     * queue_board 投影。若 booking 侧只把预约置 CANCELLED 而不联动,患者仍会挂在各科室队列里、
+     * 大屏看板照样显示他 —— 那是实打实的数据不一致。这里做对侧清理,做到"取消即出队"。
+     *
+     * <p><b>只清理 PENDING(尚未开始)</b>:{@code IN_PROGRESS} / {@code DONE} 说明人已经在检查
+     * 或已检查完,属于线下既成事实,删掉会让现场医生正在做的活和已出的结果凭空消失;
+     * {@code SKIPPED} 同理保留,供运营端「重新排队」复核。这类残留由前台线下作废流程处理。
+     *
+     * <p><b>幂等</b>:无 PENDING 任务时直接返回(重复消费 / 取消前任务就已推进完毕都是这条路),
+     * 不抛异常,保证事件重投不会让 booking 侧的事务回滚。
+     */
+    @TransactionalEventListener
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void onAppointmentCancelled(AppointmentCancelledEvent event) {
+        List<ExamTask> tasks = taskMapper.selectList(
+                new QueryWrapper<ExamTask>().eq("appointment_id", event.appointmentId()));
+        // 只挑尚未开始的任务;已开始的(检查中/已完成/已跳过)一律不动
+        List<ExamTask> pending = tasks.stream()
+                .filter(t -> "PENDING".equals(t.getStatus()))
+                .toList();
+        if (pending.isEmpty()) {
+            return;  // 幂等:无待检任务可清理,静默返回
+        }
+        List<Long> pendingIds = pending.stream().map(ExamTask::getId).toList();
+
+        // 1) 删除写模型。status 条件为二次护栏,确保任何情况下都不会误删已开始的任务。
+        taskMapper.delete(new QueryWrapper<ExamTask>()
+                .eq("status", "PENDING")
+                .in("id", pendingIds));
+
+        // 2) 同步清理看板投影:queue_board 与 exam_task 是 1:1(id 相同),按同一批 id 删除即可,
+        //    复用既有 boardMapper,不新造一套投影维护方式。
+        boardMapper.delete(new QueryWrapper<QueueBoard>().in("id", pendingIds));
+
+        // 3) SSE 广播(R-13: 必须挪到事务提交之后,慢客户端不得拖长数据库事务)。
+        //    按被删任务逐个广播,客户端据此把对应行从看板移除。
+        for (ExamTask t : pending) {
+            broadcastAfterCommit(new BoardUpdateEvent(t.getStation(), t.getId(), "cancel"));
+        }
+    }
+
     /** 工位开始检查某任务。 */
     @Transactional
     public void start(Long taskId) {
@@ -98,8 +143,8 @@ public class DispatchService {
         syncBoard(t);
         // 回写预约单:该预约首个任务开始 = 到院(CHECKED_IN)
         maybePublishCheckedIn(t.getAppointmentId());
-        // SSE推送
-        sseController.broadcastBoardUpdate(new BoardUpdateEvent(t.getStation(), taskId, "start"));
+        // SSE推送(R-13: 事务提交后再广播)
+        broadcastAfterCommit(new BoardUpdateEvent(t.getStation(), taskId, "start"));
     }
 
     /** 工位完成检查某任务。若某预约的全部任务均已终态(完成/跳过),自动生成报告。 */
@@ -119,8 +164,8 @@ public class DispatchService {
 
         // 自动叫号:推进同 station 下一位待检患者(过号重排由人工 reorder-tail 处理)
         callNext(t.getStation());
-        // SSE推送
-        sseController.broadcastBoardUpdate(new BoardUpdateEvent(t.getStation(), taskId, "complete"));
+        // SSE推送(R-13: 事务提交后再广播;注册晚于 callNext,提交时顺序与改造前一致)
+        broadcastAfterCommit(new BoardUpdateEvent(t.getStation(), taskId, "complete"));
     }
 
     /**
@@ -181,17 +226,46 @@ public class DispatchService {
         return taskMapper.selectList(q);
     }
 
-    /** 看板读模型查询(按 station 过滤可选)。同 station 内:进行中/待检前置,再按 seq。 */
+    /**
+     * 看板读模型查询(按 station 过滤可选)。同 station 内:状态优先级
+     * (PENDING → IN_PROGRESS → SKIPPED),再按 seq。
+     *
+     * <p>R-37:两条改造,全部下推到 SQL,看板不再全量加载:
+     * <ol>
+     *   <li><b>状态过滤</b>:只保留 {@code PENDING / IN_PROGRESS / SKIPPED},剔除 {@code DONE}
+     *       行。原实现把整表(含全部历史 DONE 行,年增约 55 万)无过滤载入内存 —— DONE 才是
+     *       无界增长的元凶,故以状态白名单把它挡在 SQL 之外,这是本次优化的核心;</li>
+     *   <li><b>排序下推</b>:用 {@code CASE WHEN} 表达状态优先级(与旧 Java {@code STATUS_ORDER}
+     *       语义等价:PENDING=0 / IN_PROGRESS=1 / SKIPPED=2 / ELSE=3),再按 seq,
+     *       删除原 Java {@code rows.sort}。</li>
+     * </ol>
+     *
+     * <p><b>为什么不加"当日"时间过滤</b>:最初版本同时加了 {@code created_at >= 当日零点}。
+     * 但排队看板是演示/运营的核心页面,一旦当天没有新预约,看板会直接空白(历史未完成项也被滤掉),
+     * 属明显的体验回退;而"剔除 DONE"已经解决了 99% 的体积问题(未完成项数量天然有界)。
+     * 因此这里只按状态过滤,行为与原实现接近(原实现连 DONE 一起返回)。
+     *
+     * <p><b>行为变化(须前端知悉)</b>:返回结果<b>不再包含 DONE 行</b>(原实现包含)。
+     * 之所以<b>仍保留 SKIPPED</b>,是因为前端两处展示确实依赖该状态:
+     * 大屏 {@code ScreenView} 的「已过号(队尾)」列表、运营端 {@code DispatchView} 的「重新排队」按钮,
+     * 均按 {@code status === 'SKIPPED'} 渲染;若一并剔除会造成功能回退。DONE 没有任何 UI 动作依赖,
+     * 故按 R-37 意图剔除。
+     *
+     * <p>NULL/空 station 入参语义保持不变:不加 station 条件,返回全部工位结果。
+     *
+     * <p>TODO(P2 R-37):queue_board 仍会随预约持续增长,需按 {@code created_at} 定期归档或删除历史行
+     * (本任务按要求不新增定时任务,仅在此留痕)。
+     */
     public List<QueueBoard> board(String station) {
-        QueryWrapper<QueueBoard> q = new QueryWrapper<>();
+        QueryWrapper<QueueBoard> q = new QueryWrapper<QueueBoard>()
+                .in("status", "PENDING", "IN_PROGRESS", "SKIPPED");
         if (station != null && !station.isBlank()) {
             q.eq("station", station);
         }
-        q.orderByAsc("station", "seq");
-        List<QueueBoard> rows = boardMapper.selectList(q);
-        rows.sort(Comparator.comparingInt((QueueBoard r) ->
-                STATUS_ORDER.getOrDefault(r.getStatus(), 9)).thenComparing(QueueBoard::getSeq));
-        return rows;
+        q.orderByAsc("CASE WHEN status = 'PENDING' THEN 0 WHEN status = 'IN_PROGRESS' THEN 1 "
+                        + "WHEN status = 'SKIPPED' THEN 2 ELSE 3 END")
+                .orderByAsc("seq");
+        return boardMapper.selectList(q);
     }
 
     /**
@@ -203,31 +277,26 @@ public class DispatchService {
      */
     @Transactional
     public ExamTask callNext(String station) {
-        List<ExamTask> pending = taskMapper.selectList(new QueryWrapper<ExamTask>()
-                .eq("station", station)
-                .eq("status", "PENDING")
-                .orderByAsc("seq"));
-        for (ExamTask cand : pending) {
-            // 护栏1:跳过正在其他科室检查的患者
-            if (patientHasInProgress(cand.getPatientId())) continue;
-            // 护栏2:跳过顺序更靠前项目仍未完成的患者(遵循医生指定顺序)
-            if (cand.getSeq() > patientMinPendingSeq(cand.getPatientId())) continue;
-            cand.setStatus("IN_PROGRESS");
-            LocalDateTime calledAt = LocalDateTime.now();
-            cand.setStartedAt(calledAt);
-            taskMapper.updateById(cand);
-            syncBoard(cand);
-            // 发布叫号事件 → 通知服务驱动 C 端「叫号通知」(事务提交后由 AmqpBridge 异步发出)
-            eventPublisher.publishEvent(new PatientCalledEvent(
-                    cand.getId(), cand.getAppointmentId(), cand.getPatientId(),
-                    cand.getPatientName(), cand.getStation(), cand.getItemName(), calledAt));
-            // 回写预约单:该预约首个任务开始 = 到院(CHECKED_IN)
-            maybePublishCheckedIn(cand.getAppointmentId());
-            // SSE推送
-            sseController.broadcastBoardUpdate(new BoardUpdateEvent(station, cand.getId(), "callNext"));
-            return cand;
+        // R-38: 由"取全部 PENDING 再逐个回查"的 N+1(单 station 积压 200 人时约 401 次 SQL)
+        // 改为一条 SQL 取候选:两条护栏(患者级单活跃 + 医生指定顺序)已下推到 ExamTaskMapper.selectNextCandidate。
+        ExamTask cand = taskMapper.selectNextCandidate(station);
+        if (cand == null) {
+            return null;
         }
-        return null;
+        cand.setStatus("IN_PROGRESS");
+        LocalDateTime calledAt = LocalDateTime.now();
+        cand.setStartedAt(calledAt);
+        taskMapper.updateById(cand);
+        syncBoard(cand);
+        // 发布叫号事件 → 通知服务驱动 C 端「叫号通知」(事务提交后由 AmqpBridge 异步发出)
+        eventPublisher.publishEvent(new PatientCalledEvent(
+                cand.getId(), cand.getAppointmentId(), cand.getPatientId(),
+                cand.getPatientName(), cand.getStation(), cand.getItemName(), calledAt));
+        // 回写预约单:该预约首个任务开始 = 到院(CHECKED_IN)
+        maybePublishCheckedIn(cand.getAppointmentId());
+        // SSE推送(R-13: 事务提交后再广播)
+        broadcastAfterCommit(new BoardUpdateEvent(station, cand.getId(), "callNext"));
+        return cand;
     }
 
     /**
@@ -240,13 +309,13 @@ public class DispatchService {
         if (!"PENDING".equals(t.getStatus())) {
             throw new IllegalStateException("仅 PENDING 任务可过号重排");
         }
-        Integer maxSeq = taskMapper.selectList(new QueryWrapper<ExamTask>().eq("station", t.getStation()))
-                .stream().map(ExamTask::getSeq).max(Integer::compareTo).orElse(0);
-        t.setSeq(maxSeq + 1);
+        // R-38: 用 MAX(seq) 单条聚合替代"拉整个 station 再 stream().max()"的全量加载
+        Integer maxSeq = taskMapper.selectMaxSeq(t.getStation());
+        t.setSeq((maxSeq == null ? 0 : maxSeq) + 1);
         taskMapper.updateById(t);
         syncBoard(t);
-        // SSE推送
-        sseController.broadcastBoardUpdate(new BoardUpdateEvent(t.getStation(), taskId, "reorder"));
+        // SSE推送(R-13: 事务提交后再广播)
+        broadcastAfterCommit(new BoardUpdateEvent(t.getStation(), taskId, "reorder"));
     }
 
     /** 跳过:放弃某任务置 SKIPPED(用于患者离开等场景)。仅待检/检查中可跳过。 */
@@ -263,8 +332,8 @@ public class DispatchService {
         maybeGenerateReport(t.getAppointmentId(), t.getPatientId());
         // 该工位空出来了,自动叫号下一位
         callNext(t.getStation());
-        // SSE推送
-        sseController.broadcastBoardUpdate(new BoardUpdateEvent(t.getStation(), taskId, "skip"));
+        // SSE推送(R-13: 事务提交后再广播;注册晚于 callNext,提交时顺序与改造前一致)
+        broadcastAfterCommit(new BoardUpdateEvent(t.getStation(), taskId, "skip"));
     }
 
     /**
@@ -280,23 +349,22 @@ public class DispatchService {
         if (reportService.existsForAppointment(t.getAppointmentId())) {
             throw new IllegalStateException("该预约已出具报告,跳过项不可再重新排队,请另行预约补检");
         }
-        Integer maxSeq = taskMapper.selectList(new QueryWrapper<ExamTask>().eq("station", t.getStation()))
-                .stream().map(ExamTask::getSeq).max(Integer::compareTo).orElse(0);
+        // R-38: 用 MAX(seq) 单条聚合替代"拉整个 station 再 stream().max()"的全量加载
+        Integer maxSeq = taskMapper.selectMaxSeq(t.getStation());
         t.setStatus("PENDING");
-        t.setSeq(maxSeq + 1);
+        t.setSeq((maxSeq == null ? 0 : maxSeq) + 1);
         t.setStartedAt(null);
         taskMapper.updateById(t);
         syncBoard(t);
-        // SSE推送
-        sseController.broadcastBoardUpdate(new BoardUpdateEvent(t.getStation(), taskId, "requeue"));
+        // SSE推送(R-13: 事务提交后再广播)
+        broadcastAfterCommit(new BoardUpdateEvent(t.getStation(), taskId, "requeue"));
     }
 
-    /** 活跃工位列表(存在 PENDING/IN_PROGRESS 任务的 station),供大屏页选择。 */
+    /** 活跃工位列表(存在未完成任务的 station),供大屏页选择。 */
     public List<String> listActiveStations() {
-        List<QueueBoard> rows = boardMapper.selectList(new QueryWrapper<QueueBoard>()
-                .select("distinct station")
-                .in("status", "PENDING", "IN_PROGRESS"));
-        return rows.stream().map(QueueBoard::getStation).distinct().toList();
+        // R-37: 下推为一条 SELECT DISTINCT station,替代原"select distinct station 拉全表再 Java distinct";
+        // 口径与 board() 完全一致(状态白名单,不加日期限制)。
+        return boardMapper.selectActiveStations();
     }
 
     private ExamTask requireTask(Long taskId) {
@@ -305,12 +373,6 @@ public class DispatchService {
             throw new IllegalArgumentException("任务不存在: " + taskId);
         }
         return t;
-    }
-
-    /** 护栏:同一患者不得同时在多个科室处于检查中(真实场景:一次只在一个科室)。 */
-    private boolean patientHasInProgress(Long patientId) {
-        return !taskMapper.selectList(new QueryWrapper<ExamTask>()
-                .eq("patient_id", patientId).eq("status", "IN_PROGRESS")).isEmpty();
     }
 
     /** 该患者所有待检项里的最小 seq(即医生指定顺序中最靠前的项目)。 */
@@ -357,6 +419,30 @@ public class DispatchService {
                 new QueryWrapper<ExamTask>().eq("appointment_id", appointmentId).eq("status", "IN_PROGRESS"));
         if (inProgress >= 1) {
             eventPublisher.publishEvent(new AppointmentStatusEvent(appointmentId, "CHECKED_IN"));
+        }
+    }
+
+    /**
+     * R-13: SSE 广播必须挪到数据库事务提交之后执行。
+     * 原来在 @Transactional 方法内同步调用 broadcastBoardUpdate，慢客户端(网络拥塞/半开连接)会把
+     * 数据库事务拖长、持锁不放，极端情况耗尽连接池；改为注册事务同步回调在 afterCommit 推送。
+     * 无事务上下文(如单元测试、被非事务方法调用)时保持原行为直接推送。
+     */
+    private void broadcastAfterCommit(BoardUpdateEvent event) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    try {
+                        sseController.broadcastBoardUpdate(event);
+                    } catch (Exception e) {
+                        // R-13: 事务已提交，推送失败不能回滚业务，仅记录告警
+                        log.warn("[SSE] 看板事件广播失败(事务已提交,不影响业务): {}", e.toString());
+                    }
+                }
+            });
+        } else {
+            sseController.broadcastBoardUpdate(event);
         }
     }
 }

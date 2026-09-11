@@ -1,7 +1,12 @@
 server:
   port: 8101
   error:
-    include-message: always
+    # R-32: 原先 always —— 未走 GlobalExceptionHandler 的异常会把 message 与堆栈细节
+    # 直接回给调用方,泄露内部实现甚至 SQL 片段。业务异常的中文提示由
+    # GlobalExceptionHandler 显式构造,不受此配置影响,故设为 never 不损失可用性。
+    # 本地排障可临时用 --server.error.include-message=always 打开。
+    include-message: never
+    include-stacktrace: never
 
 spring:
   application:
@@ -13,6 +18,19 @@ spring:
     username: ${PG_USER:postgres}
     password: ${PG_PASSWORD:root123}
     driver-class-name: org.postgresql.Driver
+    # R-23: 原先完全没配连接池(Hikari 默认 maximum-pool-size=10)。
+    # 在 N+1 未根治前,单次 listPage 串行占用连接可达 30+ 次、持连接数秒,
+    # 10 个并发即把池打满,报 "Connection is not available"。
+    # 注意:加大连接池只是缓解,真正要修的是 PERF-02/05/06 的全表扫描与 N+1;
+    # 池大小必须 ≤ PostgreSQL 的 max_connections(默认 100),多实例部署时按实例数分摊。
+    hikari:
+      maximum-pool-size: 30
+      minimum-idle: 10
+      connection-timeout: 10000
+      idle-timeout: 600000
+      max-lifetime: 1500000
+      validation-timeout: 3000
+      leak-detection-threshold: 10000
   rabbitmq:
     host: ${RABBIT_HOST:localhost}
     port: ${RABBIT_PORT:5672}
@@ -40,12 +58,46 @@ logging:
   charset:
     console: ${CONSOLE_LOG_CHARSET:UTF-8}
   level:
-    com.hospital: debug
+    # R-24: 原先 com.hospital 全量 DEBUG —— 热路径 log.debug 的字符串拼接无条件执行,
+    # Console Appender 的 System.out 是 synchronized,多线程下直接串行化,
+    # 写接口 CPU/RT 增加 20~40%;同时把患者 ID 等 PHI 落进日志(见 R-32)。
+    # 排障时临时打开:--logging.level.com.hospital=debug
+    com.hospital: info
+
+# JWT 配置(R-01):
+# 生产环境必须注入环境变量 APP_JWT_SECRET(≥32 字节的随机串,例如 openssl rand -base64 48 的输出),
+# 否则 JwtTokenService 启动即 fail-fast,拒绝带病启动。
+# 本地开发未注入时会临时生成一个随机密钥(重启后已签发 token 全部失效),仅用于联调。
+app:
+  jwt:
+    secret: ${APP_JWT_SECRET:}
+    # R-34: token 有效期由 8 小时缩短为 4 小时 —— 配合"改密即吊销"缩小旧会话存活窗口。
+    # 未做 refresh token,过短会让演示频繁掉线,4 小时是可用性与安全性的折中。
+    ttl: 14400000
+    # R-34: Redis 不可用时的降级策略。false(默认)= fail-closed 拒绝请求;
+    # 置为 true 表示放行,但意味着"打挂 Redis 就能让令牌吊销失效",生产不建议。
+    revocation-fail-open: false
+
+  # R-60: 报告 PDF 生成配置
+  report:
+    pdf:
+      # R-60: 中文字体路径。留空则按候选列表自动探测(Windows/Linux/macOS 常见路径),
+      # 都找不到时降级为内置字体(中文可能显示为方框)。容器/CI 建议显式指定或挂载字体。
+      font-path: ${PDF_FONT_PATH:}
+
+  # R-64: 下游单据对账兜底任务频率。
+  # 确单后生成检验申请/处方已改为事件驱动,监听器刻意吞异常(不让下游毛病拖垮确单),
+  # 这个任务就是那个取舍的安全网:扫描「已确单但医嘱未被下游单据覆盖」的就诊单并补建。
+  # 正常情况下每轮补建 0 单(仅 DEBUG 日志);一旦出现补建会打 WARN,说明确单时生成失败过。
+  reconcile:
+    cron: ${RECONCILE_CRON:0 */10 * * * ?}
 
 # 内部文件服务(core → file-service → MinIO)地址;默认 8103 与运行实例一致
 file:
   service:
     base-url: http://localhost:8103
+  # R-03: 调用 file-service 的内部令牌,生产必须与 file-service 配置同一把
+  internal-token: ${FILE_INTERNAL_TOKEN:}
 
 # SpringDoc OpenAPI (Swagger UI)
 springdoc:

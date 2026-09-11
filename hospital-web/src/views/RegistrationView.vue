@@ -13,7 +13,6 @@ const router = useRouter()
 const departments = ref<{ id: number; name: string }[]>([])
 const patients = ref<{ id: number; name: string }[]>([])
 const patientMap = computed(() => new Map(patients.value.map(p => [p.id, p.name])))
-const deptMap = computed(() => new Map(departments.value.map(d => [d.id, d.name])))
 
 // --- 挂号表单 ---
 const formDeptId = ref<number>()
@@ -113,7 +112,9 @@ function statusTag(status: string) {
 
 onMounted(async () => {
   try { departments.value = await orgApi.listDepartments() } catch { /* ignore */ }
-  try { patients.value = await listPatients() } catch { /* ignore */ }
+  // R-07: 后端患者列表已改为分页(pageSize 上限 500),这里显式取满一页
+  // TODO(P1): 改用 /api/patient/names?ids= 按需取姓名,避免挂号页全量拉取
+  try { patients.value = await listPatients({ pageNum: 1, pageSize: 500 }) } catch { /* ignore */ }
   if (departments.value.length > 0) {
     queueDeptId.value = departments.value[0].id
     await loadQueue()

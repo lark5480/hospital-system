@@ -98,6 +98,11 @@ function handleEdit(row: any) {
 
 async function handleSave() {
   if (isEdit.value) {
+    // 编辑态 id 必然存在;为空说明表单数据异常,直接放弃提交而不是打到 /undefined
+    if (form.value.id == null) {
+      ElMessage.error('菜单数据异常,缺少 id,请重新打开编辑')
+      return
+    }
     await updateMenu(form.value.id, form.value)
   } else {
     await createMenu(form.value)

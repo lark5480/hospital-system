@@ -8,7 +8,8 @@ import {
   listSlots,
   bookAppointment,
   listMyAppointments,
-  listMyReports
+  listMyReports,
+  cancelMyAppointment
 } from '@/api/patient'
 import type {
   Patient,
@@ -64,8 +65,18 @@ export const usePatientStore = defineStore('patient', () => {
 
   async function book(payload: BookingPayload) {
     const detail = await bookAppointment(payload)
-    await fetchMyAppointments(payload.patientId)
+    await fetchMyAppointments()
     return detail
+  }
+
+  /**
+   * 取消预约。成功后重新拉列表:后端会同时释放号源、清空 dispatch 侧排队任务,
+   * 列表里的状态与可操作项都必须以服务端最新结果为准,不做本地乐观改写。
+   * 失败时把错误原样抛出,由视图层把后端返回的原因透给用户。
+   */
+  async function cancel(id: number) {
+    await cancelMyAppointment(id)
+    await fetchMyAppointments()
   }
 
   async function search(keyword: string) {
@@ -81,10 +92,10 @@ export const usePatientStore = defineStore('patient', () => {
     }
   }
 
-  async function fetchMyAppointments(patientId: number) {
+  async function fetchMyAppointments() {
     loading.value = true
     try {
-      appointments.value = await listMyAppointments(patientId)
+      appointments.value = await listMyAppointments()
     } finally {
       loading.value = false
     }
@@ -103,6 +114,7 @@ export const usePatientStore = defineStore('patient', () => {
     fetchSlots,
     register,
     book,
+    cancel,
     fetchMyAppointments,
     fetchMyReports
   }

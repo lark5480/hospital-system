@@ -12,6 +12,21 @@ export interface Patient {
   createdAt: string
 }
 
+/**
+ * R-07: 患者姓名投影(GET /api/patient/names)。
+ * 仅含 id + name,不含身份证 / 手机号等 PII,供门诊大屏与下拉框按需取姓名。
+ */
+export interface PatientNameView {
+  id: number
+  name: string
+}
+
+/** R-07: 患者列表分页参数(后端默认 pageNum=1 / pageSize=200,上限 500)。 */
+export interface PatientPageQuery {
+  pageNum?: number
+  pageSize?: number
+}
+
 export interface PatientRegisterPayload {
   name: string
   gender?: string

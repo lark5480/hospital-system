@@ -3,6 +3,7 @@ package com.hospital.core.clinical.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -10,6 +11,7 @@ import static org.mockito.Mockito.when;
 import java.math.BigDecimal;
 import java.util.List;
 
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -21,7 +23,9 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.context.ApplicationEventPublisher;
 
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.hospital.core.clinical.domain.Charge;
+import com.hospital.core.clinical.domain.Order;
 import com.hospital.core.clinical.domain.Visit;
 import com.hospital.core.clinical.infrastructure.ChargeMapper;
 import com.hospital.core.clinical.infrastructure.OrderMapper;
@@ -50,6 +54,13 @@ class VisitServiceLifecycleTest {
     @Captor ArgumentCaptor<Visit> visitCaptor;
 
     VisitService service;
+
+    @BeforeAll
+    static void initMybatisPlus() {
+        // R-05: pay() 改为 LambdaUpdateWrapper 批量 UPDATE,set() 会即时解析列名,
+        // 纯单测没有 Spring 上下文,需手动初始化 lambda 缓存(生产由 mapper 注册时自动初始化)
+        MybatisPlusTestSupport.initLambdaCache(Charge.class, Order.class);
+    }
 
     @BeforeEach
     void setUp() {
@@ -175,19 +186,23 @@ class VisitServiceLifecycleTest {
             when(visitMapper.selectById(1L)).thenReturn(confirmed);
             // getDetail 内部 selectList(wrapper) 返回空
             when(chargeMapper.selectList(any())).thenReturn(List.of());
-            // pay 内部 selectList(null) 返回未缴记录(后定义优先匹配 null)
-            when(chargeMapper.selectList(null)).thenReturn(List.of(
-                    charge(1L, 1L, 1L, "UNPAID")
-            ));
             when(orderMapper.selectList(any())).thenReturn(List.of());
+            // R-05: pay() 内"是否存在待执行药品医嘱"改为 selectCount 下推,不再物化医嘱行
+            when(orderMapper.selectCount(any())).thenReturn(0L);
 
             VisitDetail result = service.pay(1L);
 
-            // 验证收费记录被更新为 PAID
-            ArgumentCaptor<Charge> chargeCaptor = ArgumentCaptor.forClass(Charge.class);
-            verify(chargeMapper).updateById(chargeCaptor.capture());
-            assertThat(chargeCaptor.getValue().getPayStatus()).isEqualTo("PAID");
-            assertThat(chargeCaptor.getValue().getPayTime()).isNotNull();
+            // R-05: 收费改为单条批量 UPDATE(不再逐条 updateById),校验下推的 SET/WHERE 语义
+            ArgumentCaptor<LambdaUpdateWrapper<Charge>> chargeUpdateCaptor =
+                    ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
+            verify(chargeMapper).update(isNull(), chargeUpdateCaptor.capture());
+            LambdaUpdateWrapper<Charge> uw = chargeUpdateCaptor.getValue();
+            assertThat(uw.getSqlSet()).contains("pay_status").contains("pay_time");
+            assertThat(uw.getTargetSql()).contains("pay_status").contains("visit_id");
+            assertThat(uw.getParamNameValuePairs().values())
+                    .contains("PAID")     // SET pay_status = 'PAID'
+                    .contains("UNPAID");  // WHERE pay_status = 'UNPAID'
+            assertThat(uw.getParamNameValuePairs().values()).contains(1L); // WHERE visit_id = 1
 
             // 验证就诊单推进为 IN_PROGRESS
             verify(visitMapper).updateById(visitCaptor.capture());
@@ -201,18 +216,15 @@ class VisitServiceLifecycleTest {
             when(visitMapper.selectById(1L)).thenReturn(inProgress);
             // getDetail 内部 selectList(wrapper) 返回空
             when(chargeMapper.selectList(any())).thenReturn(List.of());
-            // pay 内部 selectList(null) 返回未缴记录(后定义优先匹配 null)
-            when(chargeMapper.selectList(null)).thenReturn(List.of(
-                    charge(1L, 1L, 1L, "UNPAID")
-            ));
             when(orderMapper.selectList(any())).thenReturn(List.of());
+            // R-05: pay() 内"是否存在待执行药品医嘱"改为 selectCount 下推,不再物化医嘱行
+            when(orderMapper.selectCount(any())).thenReturn(0L);
 
             VisitDetail result = service.pay(1L);
 
-            // 缴费完成
-            ArgumentCaptor<Charge> chargeCaptor = ArgumentCaptor.forClass(Charge.class);
-            verify(chargeMapper).updateById(chargeCaptor.capture());
-            assertThat(chargeCaptor.getValue().getPayStatus()).isEqualTo("PAID");
+            // 缴费完成:R-05 后为单条批量 UPDATE
+            verify(chargeMapper).update(isNull(), any(LambdaUpdateWrapper.class));
+            verify(chargeMapper, never()).updateById(any(Charge.class));
 
             // IN_PROGRESS 不应再触发状态转换
             verify(visitMapper, never()).updateById(any(Visit.class));

@@ -9,4 +9,7 @@
   2. **号源不超卖**：用数据库原子占号——`SlotMapper.incrementBooked` 执行 `UPDATE booking.slot SET booked = booked + 1 WHERE id = ? AND booked < capacity`，返回受影响行数，0 即满；预约在 `@Transactional` 内先占号后落单，从根上杜绝超卖，不依赖应用层先查后改（有竞态）或乐观锁版本号（需额外字段）。
   3. **用户体系**：统一账号表 `platform.sys_user` 覆盖员工 + 患者，`patient01` 测试用户（密码 123456）；Gateway 对 `/api/patient/**` 仍路由到 hospital-core，`BookingController.book` 以 `@PreAuthorize("hasAuthority('patient:booking')")` 收口。
   4. **菜单级权限（轻量起步）**：`MainLayout` 按 `hasAuthority('patient:booking')` 渲染"体检预约（C端）"子菜单，无权限者根本看不到入口——这是菜单级权限的最小可用形态；完整的"后端返回菜单树"方案见后续 ADR-015。
-- **后果**: 易 — C 端闭环已全部实现：患者自助注册 → 套餐浏览 → 号源预约 → 排队看板；4 个 C 端视图（/patient/booking /patient/appointments /patient/my-queue /patient/my-reports）+ 后端 patient:booking 权限 + 菜单级可见性；原子杜绝超卖；事件驱动排班（见 ADR-016）；报告闭环（见 ADR-019）。
+- **后果**: 易 — C 端闭环已全部实现：患者自助注册 → 套餐浏览 → 号源预约 → 排队看板；5 个 C 端视图（/patient/booking /patient/registration /patient/appointments /patient/my-queue /patient/my-reports）+ 后端 patient:booking 权限 + 菜单级可见性；原子杜绝超卖；事件驱动排班（见 ADR-016）；报告闭环（见 ADR-019）。
+- **修订（2026-08）**：
+  1. C 端为演示闭环刻意简化：预约时自动标记 `PAID`，实付金额取套餐定价，未接支付网关（`BookingService.book`）。
+  2. 预约接口（列表/详情/发起）增加归属校验（`CurrentUserResolver` + 当前患者比对，非本人 403），消除越权访问（见 ADR-020 修订）。

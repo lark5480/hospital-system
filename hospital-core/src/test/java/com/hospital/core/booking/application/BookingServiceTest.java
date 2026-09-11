@@ -162,6 +162,23 @@ class BookingServiceTest {
         }
 
         @Test
+        @DisplayName("R-25 重复预约(同患者同号源已有 BOOKED) → IllegalStateException → 不占号不落单")
+        void book_duplicate_throws() {
+            when(slotMapper.selectById(slotId)).thenReturn(futureSlot());
+            // 已存在一条同患者同号源的 BOOKED 预约
+            when(appointmentMapper.selectCount(any())).thenReturn(1L);
+
+            assertThatThrownBy(() -> service.book(patientId, packageId, slotId))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessage("您已预约该时段,请勿重复提交");
+
+            // 幂等拦截发生在占号之前:不占号、不落单、不发事件
+            verify(slotMapper, never()).incrementBooked(any());
+            verify(appointmentMapper, never()).insert(isA(Appointment.class));
+            verify(publisher, never()).publishEvent(any());
+        }
+
+        @Test
         @DisplayName("并发:第一个请求成功,第二个号源已满")
         void book_concurrent_oneSucceeds() {
             when(slotMapper.selectById(slotId)).thenReturn(futureSlot());

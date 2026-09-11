@@ -1,12 +1,16 @@
 package com.hospital.core;
 
 import static com.tngtech.archunit.core.domain.JavaClass.Predicates.resideInAnyPackage;
+import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.classes;
+import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 import static com.tngtech.archunit.library.Architectures.layeredArchitecture;
 
 import com.tngtech.archunit.core.importer.ImportOption;
 import com.tngtech.archunit.junit.AnalyzeClasses;
 import com.tngtech.archunit.junit.ArchTest;
 import com.tngtech.archunit.lang.ArchRule;
+
+import com.hospital.core.clinical.domain.Visit;
 
 /**
  * 架构红线(ArchUnit):CI 中一旦违反即构建失败。
@@ -65,4 +69,44 @@ class ArchitectureTest {
                             "..core.lab..",
                             "..core.operation..",
                             "..core.integration..");
+
+    /**
+     * R-48 状态机收口守护:{@link com.hospital.core.clinical.domain.VisitStatus} 的类注释承诺
+     * "杜绝各 Service 绕过守卫直接 setStatus 的旁路"——就诊状态必须经
+     * {@link Visit#transitTo(com.hospital.core.clinical.domain.VisitStatus)} 迁移(内部校验合法转换),
+     * 而非由各 Service 直接 {@code Visit.setStatus(String)}。
+     *
+     * <p>现状核实(src/main 全量 {@code setStatus(} 调用点):唯一的 Service→Visit.setStatus 出现在
+     * {@code VisitService}。其中
+     * <ul>
+     *   <li>{@code VisitService.create} 与 {@code VisitService.createWithOrders} —— 在实体<b>初始构造期</b>
+     *       将状态置为 {@code CREATED}(此刻实体尚无前序状态,状态机迁移规则不适用),属合法调用点;</li>
+     *   <li>其余 {@code setStatus} 均落在 Order / Charge / ExamTask / QueueBoard / VisitReadModel / Registration 等
+     *       其它实体上,不命中本规则 target。</li>
+     * </ul>
+     *
+     * <p>白名单:按类名整体排除 {@code VisitService}(仅因上述两条 CREATED 初始化路径)。这是 ArchUnit 类级
+     * {@code callMethod} 能表达的最细粒度排除;代价是 VisitService 内部新增的 setStatus 不会被本规则拦截,
+     * 已在此显式记录。{@code VisitService} 之外的任何 {@code *Service} 直接调用 {@code Visit.setStatus} 都会构建失败。
+     */
+    @ArchTest
+    static final ArchRule servicesMustNotBypassVisitStateMachine =
+            noClasses()
+                    .that().haveSimpleNameEndingWith("Service")
+                    .and().doNotHaveSimpleName("VisitService")
+                    .should().callMethod(Visit.class, "setStatus", String.class)
+                    .because("就诊状态必须经 Visit#transitTo 守卫迁移;Service 不得直接 setStatus 旁路");
+
+    /**
+     * R-48 规则生效守卫:确认 ArchUnit 确实分析到 {@code *Service} 类,
+     * 保证上面的状态机旁路规则不是对"空集合"的假通过(ArchUnit 默认 allowEmptyShould=false:
+     * 选择集为空即失败,是一种显式的"规则失活"告警)。
+     * {@code beAssignableTo(Object.class)} 对任何类恒真,故本规则只会因"未匹配到 *Service 类"而失败。
+     */
+    @ArchTest
+    static final ArchRule visitStateMachineGuardIsArmed =
+            classes()
+                    .that().haveSimpleNameEndingWith("Service")
+                    .should().beAssignableTo(Object.class)
+                    .because("守卫:必须分析到至少一个 *Service 类,否则状态机旁路规则形同虚设");
 }

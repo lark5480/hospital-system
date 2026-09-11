@@ -27,6 +27,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -84,6 +85,57 @@ class LabServiceTest {
             when(visitMapper.selectById(999L)).thenReturn(null);
             assertThatThrownBy(() -> service.createFromVisit(999L, 5L, null))
                     .isInstanceOf(IllegalArgumentException.class);
+        }
+
+        @Test
+        @DisplayName("幂等确单:就诊已确单/进行中 → 不得再调 confirm(否则撞状态机,事务整体回滚)")
+        void createFromVisit_visitAlreadyConfirmed_doesNotConfirmAgain() {
+            Visit confirmed = visit(10L, 42L);
+            confirmed.setStatus("CONFIRMED");
+            when(visitMapper.selectById(10L)).thenReturn(confirmed);
+            when(orderMapper.selectList(any())).thenReturn(List.of(labOrder(1L, "血常规")));
+
+            LabRequisition result = service.createFromVisit(10L, 5L, null);
+
+            assertThat(result.getStatus()).isEqualTo("PENDING");
+            // 关键断言:前端「确单」流程已经先调过 visitService.confirm(),
+            // 此处再无条件确一次会抛「非法就诊状态转换: CONFIRMED → CONFIRMED」,
+            // 异常导致整个事务回滚 —— 检验申请再也建不出来(曾经的真实故障)。
+            verify(visitService, never()).confirm(any());
+        }
+
+        @Test
+        @DisplayName("就诊仍是草稿(CREATED) → 由本方法确单一次(保留原有的锁定语义)")
+        void createFromVisit_draft_confirmCalledOnce() {
+            Visit draft = visit(10L, 42L);
+            draft.setStatus("CREATED");
+            when(visitMapper.selectById(10L)).thenReturn(draft);
+            when(orderMapper.selectList(any())).thenReturn(List.of(labOrder(1L, "血常规")));
+
+            service.createFromVisit(10L, 5L, null);
+
+            verify(visitService).confirm(10L);
+        }
+
+        @Test
+        @DisplayName("R-64 幂等:已有 PENDING 申请且该就诊医嘱已被完全覆盖 → 返回既有申请,不抛异常、不重复插明细")
+        void createFromVisit_existingPendingNoNewOrders_returnsExisting() {
+            when(visitMapper.selectById(10L)).thenReturn(visit(10L, 42L));
+            when(orderMapper.selectList(any())).thenReturn(List.of(labOrder(1L, "血常规")));
+
+            LabRequisition existing = pendingReq(9L);
+            when(requisitionMapper.selectOne(any())).thenReturn(existing);
+            LabResultItem covered = new LabResultItem();
+            covered.setRequisitionId(9L);
+            covered.setOrderId(1L);
+            when(resultItemMapper.selectList(any())).thenReturn(List.of(covered));
+
+            LabRequisition result = service.createFromVisit(10L, 5L, null);
+
+            // 语义变更:原先这里抛 IllegalStateException,调用方(前端)靠"是不是 409"猜"没东西可追加"。
+            // 现在本方法还会被确单事件监听器与对账 job 调用 —— 对它们而言"没有新医嘱"是正常的无事可做。
+            assertThat(result).isSameAs(existing);
+            verify(resultItemMapper, never()).insert(any(LabResultItem.class));
         }
     }
 

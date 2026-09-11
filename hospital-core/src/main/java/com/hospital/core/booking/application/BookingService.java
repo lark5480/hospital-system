@@ -3,8 +3,13 @@ package com.hospital.core.booking.application;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
@@ -16,7 +21,9 @@ import org.springframework.transaction.event.TransactionalEventListener;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.hospital.core.booking.domain.Appointment;
+import com.hospital.core.booking.domain.AppointmentCancelledEvent;
 import com.hospital.core.booking.domain.AppointmentCreatedEvent;
 import com.hospital.core.booking.domain.AppointmentStatusEvent;
 import com.hospital.core.booking.domain.ExamItem;
@@ -112,23 +119,34 @@ public class BookingService {
     @Transactional
     public void ensureSlotsExist(Long packageId, int days, int capacity) {
         LocalDate today = LocalDate.now();
+        LocalDate end = today.plusDays(Math.max(days - 1, 0));
+        // R-42: 一次范围查询取回已存在的 (exam_date, period) 集合做内存去重,
+        // 替代原实现 days × 2 次逐格 selectCount 的 N+1。
+        List<Slot> existing = slotMapper.selectList(new LambdaQueryWrapper<Slot>()
+                .eq(Slot::getPackageId, packageId)
+                .ge(Slot::getExamDate, today)
+                .le(Slot::getExamDate, end));
+        Set<String> existingKeys = new HashSet<>();
+        for (Slot s : existing) {
+            existingKeys.add(s.getExamDate() + "|" + s.getPeriod());
+        }
+        List<Slot> toInsert = new ArrayList<>();
         for (int i = 0; i < days; i++) {
             LocalDate date = today.plusDays(i);
             for (String period : List.of("AM", "PM")) {
-                boolean exists = slotMapper.selectCount(
-                        new LambdaQueryWrapper<Slot>()
-                                .eq(Slot::getPackageId, packageId)
-                                .eq(Slot::getExamDate, date)
-                                .eq(Slot::getPeriod, period)) > 0;
-                if (exists) continue;
+                if (existingKeys.contains(date + "|" + period)) continue;
                 Slot s = new Slot();
                 s.setPackageId(packageId);
                 s.setExamDate(date);
                 s.setPeriod(period);
                 s.setCapacity(capacity);
                 s.setBooked(0);
-                slotMapper.insert(s);
+                toInsert.add(s);
             }
+        }
+        // R-42: 单条批量 INSERT 落库,替代逐条 insert 的写放大。
+        if (!toInsert.isEmpty()) {
+            slotMapper.batchInsert(toInsert);
         }
     }
 
@@ -139,12 +157,28 @@ public class BookingService {
     @Transactional
     public int cleanupExpiredAppointments() {
         List<Appointment> expired = appointmentMapper.selectExpiredBooked(LocalDate.now());
+        if (expired.isEmpty()) {
+            return 0;
+        }
+        // R-42: 批量 UPDATE 替代逐条 updateById + decrementBooked 的写放大。
+        // 1) 一次 UPDATE 把这批过期预约置 CANCELLED(替代 N 次 updateById)。
+        List<Long> ids = expired.stream().map(Appointment::getId).toList();
+        appointmentMapper.update(null, new UpdateWrapper<Appointment>()
+                .set("status", "CANCELLED")
+                .in("id", ids));
+        // 2) 按 slot 聚合取消数量,一次批量释放号源(替代 N 次 decrementBooked)。
+        Map<Long, Integer> releaseBySlot = new HashMap<>();
         for (Appointment a : expired) {
-            a.setStatus("CANCELLED");
-            appointmentMapper.updateById(a);
             if (a.getSlotId() != null) {
-                slotMapper.decrementBooked(a.getSlotId());
+                releaseBySlot.merge(a.getSlotId(), 1, Integer::sum);
             }
+        }
+        if (!releaseBySlot.isEmpty()) {
+            List<Map<String, Object>> decrements = new ArrayList<>(releaseBySlot.size());
+            for (Map.Entry<Long, Integer> e : releaseBySlot.entrySet()) {
+                decrements.add(Map.of("slotId", e.getKey(), "cnt", e.getValue()));
+            }
+            slotMapper.releaseBookedBatch(decrements);
         }
         return expired.size();
     }
@@ -182,25 +216,41 @@ public class BookingService {
         if (slot.getExamDate().isBefore(LocalDate.now())) {
             throw new IllegalStateException("号源已过期,请选择今天及以后的时段");
         }
+
+        // R-25: 重复预约幂等校验(占号之前)。同一患者 + 同一号源若已存在 BOOKED 预约,
+        // 直接拒绝,避免前端双击 / 网络重试导致重复落单并多扣号源。
+        // 抛 IllegalStateException,由 GlobalExceptionHandler 映射为 409。
+        // 说明:这是应用层校验,并发双写下仍有竞态窗口(两个请求可同时通过校验)。
+        // 彻底解决需要数据库侧"部分唯一索引"(booking.appointment(patient_id, slot_id) WHERE status='BOOKED')
+        // + 存量重复数据清洗;但 spring.sql.init.mode=always 每次启动都跑 schema.sql,
+        // 若存量已有重复行,CREATE UNIQUE INDEX 会直接让应用启动失败,故本期不做,列为 P3。
+        Long duplicate = appointmentMapper.selectCount(new QueryWrapper<Appointment>()
+                .eq("patient_id", patientId)
+                .eq("slot_id", slotId)
+                .eq("status", "BOOKED"));
+        if (duplicate != null && duplicate > 0) {
+            throw new IllegalStateException("您已预约该时段,请勿重复提交");
+        }
+
         int updated = slotMapper.incrementBooked(slotId);
         if (updated == 0) {
             throw new IllegalStateException("号源已满");
         }
+        // R-42: 取价提前到 insert 之前。原实现先 insert 拿到自增 id,再 updateById 回填付费字段,
+        // 同一行被写两次;现将套餐定价一次性装配好后单次 insert,预约只落一次盘。
+        // C端预约演示:自动标记已付费,金额取套餐定价
+        ExamPackage pkg = packageMapper.selectById(packageId);
         Appointment appt = new Appointment();
         appt.setPatientId(patientId);
         appt.setPackageId(packageId);
         appt.setSlotId(slotId);
         appt.setStatus("BOOKED");
         appt.setCreatedAt(LocalDateTime.now());
-        appointmentMapper.insert(appt);
-
-        // C端预约演示:自动标记已付费,金额取套餐定价
-        ExamPackage pkg = packageMapper.selectById(packageId);
         if (pkg != null && pkg.getPrice() != null) {
             appt.setPayStatus("PAID");
             appt.setPayAmount(pkg.getPrice());
-            appointmentMapper.updateById(appt);
         }
+        appointmentMapper.insert(appt);
 
         // 组装自包含事件快照(患者名 + 项目简报),下游 Dispatch 零回查。
         String patientName = patientApi.getName(patientId);
@@ -213,6 +263,82 @@ public class BookingService {
                 appt.getId(), patientId, patientName, packageId, briefs));
 
         return appt;
+    }
+
+    /**
+     * C 端患者自助取消预约:置 CANCELLED + 释放号源 + 发布取消事件。
+     *
+     * <p><b>为什么只有 BOOKED 可取消</b>:
+     * <ul>
+     *   <li>{@code CHECKED_IN}(已到院)/ {@code DONE}(已完成)属于<b>线下流程</b>——患者人已经在院、
+     *       检查可能已经开始甚至已出报告,这时让 C 端一键取消会把现场排队、收费、报告全部打成悬空数据,
+     *       应走前台/医生端的线下作废流程,而不是自助取消;</li>
+     *   <li>{@code CANCELLED}(已取消)必须<b>显式报错而不是静默成功</b>:静默成功会让用户以为
+     *       "这次操作生效了",从而掩盖真实状态(例如其实是别人/定时任务取消的),也可能让人误以为
+     *       号源被再次释放。重复取消返回 409 语义,是幂等保护的常规做法(拒绝而非吞掉)。</li>
+     * </ul>
+     *
+     * <p><b>为什么必须联动 dispatch</b>:见 {@link AppointmentCancelledEvent} 的类注释——
+     * 预约在 dispatch 侧已展开成 N 条 {@code ExamTask} 与 {@code queue_board} 投影,
+     * 不清理的话患者会继续留在排队队列与看板上。本方法只负责发事件,
+     * 由 dispatch 侧监听并清理,保持模块单向依赖(booking 不依赖 dispatch)。
+     *
+     * <p><b>号源释放</b>:复用 {@code cleanupExpiredAppointments()} 的批量释放路径
+     * {@code SlotMapper.releaseBookedBatch}(一次 UPDATE 完成),而不是
+     * {@code decrementBooked}——后者是 R-42 明确治理掉的写放大写法。
+     * 取消单条预约时传单元素列表即可,语义与批量清理完全一致。
+     *
+     * @throws IllegalArgumentException 预约不存在(GlobalExceptionHandler 映射为 404)
+     * @throws IllegalStateException    当前状态不允许取消(映射为 409)
+     */
+    @Transactional
+    public void cancelAppointment(Long appointmentId) {
+        Appointment appt = appointmentMapper.selectById(appointmentId);
+        if (appt == null) {
+            // 沿用既有约定:IllegalArgumentException → 全局异常处理器映射 404(见 GlobalExceptionHandler)
+            throw new IllegalArgumentException("预约不存在: " + appointmentId);
+        }
+        // 状态校验:仅 BOOKED 可自助取消,其余一律 409(理由见方法注释)
+        if (!"BOOKED".equals(appt.getStatus())) {
+            throw new IllegalStateException(cancelRejectReason(appt.getStatus()));
+        }
+
+        // 付费状态同步:建单时没有支付网关,有价套餐被直接标记为 PAID(见 book())。
+        // 若不处理,C 端「我的预约」会显示"已支付 + 已取消" —— 用户付了钱却没有可做的检查,
+        // 是本次新增页面上肉眼可见的不一致。
+        // 注意:**这里没有发生真实退款**。当前既无支付网关也无退款流水,REFUNDED 只是把状态
+        // 改成与"预约已取消"自洽的终态。将来接入真实支付时必须改为
+        // "调用退款网关成功后再置 REFUNDED",否则会出现"标记已退款但钱没退"。
+        if ("PAID".equals(appt.getPayStatus())) {
+            appt.setPayStatus("REFUNDED");
+        }
+        appt.setStatus("CANCELLED");
+        appointmentMapper.updateById(appt);
+
+        // 释放号源:单元素批量更新,与 cleanupExpiredAppointments 走同一条 SQL 路径(R-42)。
+        // slotId 为 null(历史无号源预约)时跳过,避免拼出空参数列表导致 SQL 语法错误。
+        if (appt.getSlotId() != null) {
+            List<Map<String, Object>> decrements = new ArrayList<>(1);
+            decrements.add(Map.of("slotId", appt.getSlotId(), "cnt", 1));
+            slotMapper.releaseBookedBatch(decrements);
+        }
+
+        // 发布取消事件 → dispatch 清理已生成的检查任务与看板投影(提交后消费,失败不影响本事务)
+        publisher.publishEvent(new AppointmentCancelledEvent(appt.getId(), appt.getPatientId()));
+    }
+
+    /** 不可取消状态的人话原因(直接透出给 C 端,避免只回一个干巴巴的状态码)。 */
+    private static String cancelRejectReason(String status) {
+        if ("CHECKED_IN".equals(status)) {
+            return "您已到院签到,不可自助取消,请联系前台办理";
+        }
+        if ("DONE".equals(status)) {
+            return "本次体检已完成,不可取消";
+        }
+        if ("CANCELLED".equals(status)) {
+            return "该预约已取消,请勿重复操作";
+        }
+        return "当前状态(" + status + ")不支持取消";
     }
 
     public List<Appointment> listByPatient(Long patientId) {

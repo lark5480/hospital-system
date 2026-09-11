@@ -1,14 +1,16 @@
 <script setup lang="ts">
-import { onMounted, onActivated, onUnmounted, reactive, ref, computed } from 'vue'
+import { onMounted, onActivated, onUnmounted, reactive, ref, computed, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useVisitStore } from '@/stores/visit'
 import { useAuthStore, hasAuthority } from '@/stores/auth'
 import type { OrderType, PayStatus, Order } from '@/types/visit'
+import type { Department } from '@/types/org'
 import * as orgApi from '@/api/org'
 import { executeExamOrder as apiExecuteExamOrder } from '@/api/visit'
-import * as labApi from '@/api/lab'
-import * as pharmacyApi from '@/api/pharmacy'
+// R-64: 不再 import labApi / pharmacyApi —— 检验申请与处方已由服务端在确单/追加医嘱时自动生成,
+// 前端不再发这两个请求(原先的客户端编排没有补偿,失败即单据永久缺失)。
+// 若将来需要手工补建入口,再按需引回。
 
 const route = useRoute()
 const visitId = Number(route.params.id)
@@ -106,11 +108,30 @@ const orderForm = reactive<{ type: OrderType; itemName: string; quantity: number
 })
 
 // 执行科室下拉(仅 EXAM/LAB 时使用)
-const departments = ref<{ id: number; name: string }[]>([])
+const departments = ref<Department[]>([])
 async function loadDepartments() {
   try { departments.value = await orgApi.listDepartments() } catch { /* ignore */ }
 }
 const showExecutionDept = computed(() => ['EXAM', 'LAB'].includes(orderForm.type))
+
+/**
+ * 检验科科室 ID(org.department.code = 'LAB')。
+ *
+ * <p>LabService 是按 `orders.execution_dept_id` 过滤检验申请的,而检验科技师登录后前端会把
+ * 其 departmentId 作为过滤条件一并下传。因此检验医嘱的执行科室**必须是检验科** ——
+ * 若落成默认值 0 或误选成开单科室(如内科),该申请会永远不出现在检验科的列表里,
+ * 且全程没有任何报错,只能靠查库才能发现。
+ */
+const labDeptId = computed(() => departments.value.find(d => d.code === 'LAB')?.id)
+
+/** LAB 的执行科室由系统指定为检验科,禁止手改(避免误选导致申请到不了检验科)。 */
+const executionDeptLocked = computed(() => orderForm.type === 'LAB')
+
+// 切换到检验时自动带上检验科(依赖 labDeptId,科室列表晚于弹窗加载也能补上);
+// 从检验切走则清空,避免把检验科残留给检查/药品医嘱。
+watch([() => orderForm.type, labDeptId], ([type, labId]) => {
+  orderForm.executionDeptId = type === 'LAB' ? (labId ?? 0) : 0
+})
 
 function resolveDeptName(deptId?: number | null): string {
   if (!deptId) return '-'
@@ -144,29 +165,27 @@ async function submitOrder() {
     ElMessage.warning('请填写医嘱名称')
     return
   }
+  // 检查/检验必须指定执行科室:留空会落库 execution_dept_id=0,
+  // 该医嘱不属于任何科室 —— 检验申请、检查任务、跨科可见性全都按执行科室过滤,
+  // 结果是这条医嘱"谁都不显示",且没有任何报错。
+  if (showExecutionDept.value && !orderForm.executionDeptId) {
+    ElMessage.warning('请选择执行科室')
+    return
+  }
+  // 单价必须大于 0:后端 Order.unitPrice 有"必须大于0"的校验,留 0 会吃一个服务端 400
+  // (提示一闪而过,极易误以为医嘱已加上,实际没落库 —— 并连带让确单时"没有检验医嘱可生成申请")。
+  // 这里提前拦住,与执行科室校验同理:能得到服务端 400 的输入就不该发出去。
+  if (!orderForm.unitPrice || orderForm.unitPrice <= 0) {
+    ElMessage.warning('请填写大于 0 的单价')
+    return
+  }
   try {
     await store.addOrder(visitId, { ...orderForm })
-    // 如果就诊已确单,自动同步新医嘱到对应单据(支持二次诊断追加)
-    if (store.detail?.visit.status !== 'CREATED') {
-      const doctorId = store.detail!.visit.doctorId
-      if (orderForm.type === 'MEDICATION') {
-        try {
-          await pharmacyApi.createPrescription({ visitId, doctorId })
-        } catch (e: any) {
-          if (e?.response?.status !== 409) {
-            ElMessage.warning('处方同步失败: ' + (e?.response?.data?.message || e?.message))
-          }
-        }
-      } else if (orderForm.type === 'LAB') {
-        try {
-          await labApi.createRequisition({ visitId, doctorId })
-        } catch (e: any) {
-          if (e?.response?.status !== 409) {
-            ElMessage.warning('检验申请同步失败: ' + (e?.response?.data?.message || e?.message))
-          }
-        }
-      }
-    }
+    // R-64: 就诊已确单时追加的医嘱,其下游单据(检验申请 / 处方)由服务端生成 ——
+    // VisitService.addOrder 会发布 VisitOrdersConfirmedEvent,lab / pharmacy 的监听器各自订阅。
+    // 原先这里要前端再发一个 HTTP 去同步,属没有补偿的客户端编排:请求丢失或失败都会让单据永久缺失,
+    // 而且判断依据是本地快照 store.detail,快照 stale 就会静默跳过(这正是"确单后追加检验医嘱
+    // 但检验科永远看不到"的成因)。
     ElMessage.success('医嘱已添加,收费已生成')
     orderDialog.value = false
     orderForm.itemName = ''
@@ -271,7 +290,6 @@ async function doPay() {
 
 async function doConfirm() {
   if (!store.detail) return
-  const doctorId = store.detail.visit.doctorId
   const hasLabOrders = store.detail.orders.some(o => o.type === 'LAB' && o.status === 'CREATED')
   const hasMedicationOrders = store.detail.orders.some(o => o.type === 'MEDICATION' && o.status === 'CREATED')
 
@@ -291,30 +309,16 @@ async function doConfirm() {
 
   confirming.value = true
   try {
-    // 1. 先确单
+    // R-64: 这里只做一件事 —— 确单。
+    //
+    // 原先确单成功后前端还会再发两个请求(POST /lab/requisitions、/pharmacy/prescriptions)去生成
+    // 检验申请与处方,那是"没有补偿的客户端编排":请求丢失、被校验拦、中途失败都会让单据永久缺失,
+    // 而这里只能靠"是不是 409"猜哪种失败算正常,失败也只弹一句 warning toast。
+    // 现在生成由服务端在确单事务提交后的事件监听器里完成(与 booking→dispatch 同一范式),
+    // 前端不再承担一致性责任 —— 生成失败由后端对账任务兜底,不在这里补救。
+    //
+    // 注:"将自动生成检验申请/处方"的提示仍然成立,只是执行者从浏览器换成了服务端。
     await store.confirm(visitId)
-    // 2. 自动生成检验申请(如有LAB医嘱)
-    if (hasLabOrders) {
-      try {
-        await labApi.createRequisition({ visitId, doctorId })
-      } catch (e: any) {
-        // 已有待处理的检验申请则忽略
-        if (e?.response?.status !== 409) {
-          ElMessage.warning('检验申请生成失败: ' + (e?.response?.data?.message || e?.message))
-        }
-      }
-    }
-    // 3. 自动生成处方(如有MEDICATION医嘱)
-    if (hasMedicationOrders) {
-      try {
-        await pharmacyApi.createPrescription({ visitId, doctorId })
-      } catch (e: any) {
-        // 已有待处理的处方则忽略
-        if (e?.response?.status !== 409) {
-          ElMessage.warning('处方生成失败: ' + (e?.response?.data?.message || e?.message))
-        }
-      }
-    }
     await store.fetchDetail(visitId)
     ElMessage.success('确单成功')
   } catch (e: any) {
@@ -386,7 +390,9 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <template v-if="isOwnDetail">
+    <!-- store.detail 在加载中/加载失败时为 null,这里显式加上非空守卫,
+         使模板内对 store.detail.* 的访问都处于已收窄的作用域中 -->
+    <template v-if="store.detail && isOwnDetail">
       <el-descriptions border :column="3" class="block">
         <el-descriptions-item label="患者">{{ store.detail.patientName || store.detail.visit.patientId }}</el-descriptions-item>
         <el-descriptions-item label="医生">{{ store.detail.doctorName || store.detail.visit.doctorId }}</el-descriptions-item>
@@ -491,10 +497,11 @@ onUnmounted(() => {
         </el-form-item>
         <el-form-item label="执行科室">
           <el-select v-model="orderForm.executionDeptId" placeholder="请选择执行科室" style="width:100%"
-            :disabled="!showExecutionDept">
+            :disabled="!showExecutionDept || executionDeptLocked">
             <el-option v-for="d in departments" :key="d.id" :label="d.name" :value="d.id" />
           </el-select>
-          <span v-if="!showExecutionDept" class="hint">仅检查/检验需指定执行科室</span>
+          <span v-if="executionDeptLocked" class="hint">检验医嘱由检验科执行,已自动指定</span>
+          <span v-else-if="!showExecutionDept" class="hint">仅检查/检验需指定执行科室</span>
         </el-form-item>
       </el-form>
       <template #footer>

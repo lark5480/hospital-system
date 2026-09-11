@@ -5,6 +5,15 @@ import { subscribeNotifications, unsubscribe } from '@/api/notifySSE'
 import type { NotificationRecord } from '@/types/notification'
 import { useAuthStore } from '@/stores/auth'
 
+/**
+ * R-11: 通知台可用的员工权限(持有任一即可),与服务端
+ * `hospital-notification-service` 的 EMPLOYEE_AUTHORITIES 保持一致。
+ */
+const EMPLOYEE_AUTHORITIES = [
+  'visit:entry', 'visit:audit', 'order:execute',
+  'pharmacy:dispense', 'charge:pay', 'system:admin'
+]
+
 export const useNotificationStore = defineStore('notification', () => {
   const items = ref<NotificationRecord[]>([])
   const total = ref(0)
@@ -13,8 +22,24 @@ export const useNotificationStore = defineStore('notification', () => {
   const error = ref('')
   const useSSE = ref(false)
 
+  /**
+   * R-11: 通知为全院级内容,服务端已收紧为仅员工可读/可订阅。
+   * 患者路由(patient/*)同样挂在 MainLayout 下,而 MainLayout 会无条件拉取通知 —— 若不在这里拦截,
+   * 患者每次进入页面都会拿到 403,并触发 SSE 的退避重连。故在此统一门禁:
+   * 非员工直接不请求、不订阅(与服务端策略一致,失败时不再靠"报错"兜底)。
+   */
+  function canUseNotifications(): boolean {
+    const auth = useAuthStore()
+    return EMPLOYEE_AUTHORITIES.some(a => auth.authorities?.includes(a))
+  }
+
   async function fetchEvents() {
     const auth = useAuthStore()
+    if (!canUseNotifications()) {
+      items.value = []
+      total.value = 0
+      return
+    }
     loading.value = true
     error.value = ''
     try {
@@ -39,6 +64,10 @@ export const useNotificationStore = defineStore('notification', () => {
 
   function setupSSE() {
     unsubscribe()
+    // R-11: 非员工不订阅(与服务端授权策略一致),避免 403 与重连噪音
+    if (!canUseNotifications()) {
+      return
+    }
     const auth = useAuthStore()
     const deptId = auth.departmentId
     subscribeNotifications((record: any) => {

@@ -4,6 +4,7 @@ import { ElMessage } from 'element-plus'
 import * as dispatchApi from '@/api/dispatch'
 import type { ExamTask } from '@/types/dispatch'
 import { usePatientStore } from '@/stores/patient'
+import { createVisibilityAwarePoller } from '@/utils/polling'
 
 const patientStore = usePatientStore()
 const tasks = ref<ExamTask[]>([])
@@ -12,8 +13,6 @@ const loading = ref(false)
 const calledBanner = ref<ExamTask | null>(null)
 // 记录上一次轮询各任务状态,用于检测「刚被叫号」的瞬间
 const prevStatus = new Map<number, string>()
-
-let pollTimer: ReturnType<typeof setInterval> | null = null
 
 const statusMeta: Record<string, { text: string; type: string }> = {
   PENDING: { text: '等待中', type: 'info' },
@@ -41,15 +40,18 @@ async function fetchQueue() {
   finally { loading.value = false }
 }
 
+// R-40: 10s 轮询改由可见性感知轮询器驱动 —— 页面隐藏(切后台/最小化)自动暂停,
+// 重新可见时立即拉一次并恢复,避免患者把页面挂后台后仍在持续请求。
+const poller = createVisibilityAwarePoller(fetchQueue, 10000)
+
 onMounted(async () => {
   await patientStore.fetchMe()
   fetchQueue()
-  // 每 10 秒自动刷新排队状态
-  pollTimer = setInterval(() => fetchQueue(), 10000)
+  poller.start()
 })
 
 onUnmounted(() => {
-  if (pollTimer) clearInterval(pollTimer)
+  poller.stop()
 })
 </script>
 

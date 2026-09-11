@@ -7,13 +7,21 @@ import com.hospital.core.clinical.domain.Visit;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.sql.Date;
 import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * R-49: 消除对全局种子数据(演示患者 id=1)的断言耦合。
+ *
+ * <p>原先三个用例硬编码 {@code patientId=1L}。现改为用 JdbcTemplate 自造测试患者并取回自增 id,
+ * 测试位于 @Transactional 事务中、结束即回滚,不再依赖 schema.sql / DataInitializer 播下的种子数据。
+ */
 @SpringBootTest
 @Transactional
 class MedicalRecordTest {
@@ -24,15 +32,42 @@ class MedicalRecordTest {
     @Autowired
     private VisitService visitService;
 
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
+
+    /** R-49: 自造测试患者,返回自增 id(独立手机号,与种子数据隔离;事务结束回滚)。 */
+    private Long newTestPatientId() {
+        String phone = "13900000051";
+        return jdbcTemplate.queryForObject(
+                "INSERT INTO patient.patient (name, gender, birthday, phone, username) "
+                        + "VALUES (?,?,?,?,?) RETURNING id",
+                Long.class, "R49病历测试患者", "M", Date.valueOf("1990-01-01"), phone, phone);
+    }
+
+    /**
+     * R-49: 自造测试医生。注意 clinical.medical_record.doctor_id 为 NOT NULL,
+     * MedicalRecordService.save 会用就诊的 doctor_id 回填,故这里的就诊必须带一个非空医生 id。
+     */
+    private Long newTestDoctorId() {
+        String phone = "13900000052";
+        return jdbcTemplate.queryForObject(
+                "INSERT INTO org.staff (name, gender, phone, dept_id, position, username) "
+                        + "VALUES (?,?,?,?,?,?) RETURNING id",
+                Long.class, "R49病历测试医生", "M", phone, null, "DOCTOR", phone);
+    }
+
+    private Visit newVisit(Long patientId, Long doctorId, String chiefComplaint) {
+        Visit visit = new Visit();
+        visit.setPatientId(patientId);
+        visit.setDoctorId(doctorId);
+        visit.setChiefComplaint(chiefComplaint);
+        return visitService.create(visit);
+    }
+
     @Test
     void shouldCreateMedicalRecord() {
         // Given
-        Visit visit = new Visit();
-        visit.setPatientId(1L);
-        visit.setDoctorId(1L);
-        visit.setDeptId(1L);
-        visit.setChiefComplaint("头痛、发热");
-        Visit created = visitService.create(visit);
+        Visit created = newVisit(newTestPatientId(), newTestDoctorId(), "头痛、发热");
 
         MedicalRecord record = new MedicalRecord();
         record.setChiefComplaint("头痛、发热3天");
@@ -60,12 +95,7 @@ class MedicalRecordTest {
     @Test
     void shouldFinalizeMedicalRecord() {
         // Given
-        Visit visit = new Visit();
-        visit.setPatientId(1L);
-        visit.setDoctorId(1L);
-        visit.setDeptId(1L);
-        visit.setChiefComplaint("测试");
-        Visit created = visitService.create(visit);
+        Visit created = newVisit(newTestPatientId(), newTestDoctorId(), "测试");
 
         MedicalRecord record = new MedicalRecord();
         record.setChiefComplaint("测试主诉");
@@ -81,20 +111,16 @@ class MedicalRecordTest {
 
     @Test
     void shouldQueryByPatientId() {
-        // Given
-        Visit visit = new Visit();
-        visit.setPatientId(1L);
-        visit.setDoctorId(1L);
-        visit.setDeptId(1L);
-        visit.setChiefComplaint("测试");
-        Visit created = visitService.create(visit);
+        // Given - 用自造患者 id 查询,不依赖种子患者 id=1
+        Long patientId = newTestPatientId();
+        Visit created = newVisit(patientId, newTestDoctorId(), "测试");
 
         MedicalRecord record = new MedicalRecord();
         record.setChiefComplaint("测试主诉");
         medicalRecordService.save(created.getId(), record);
 
         // When
-        List<MedicalRecord> records = medicalRecordService.listByPatientId(1L);
+        List<MedicalRecord> records = medicalRecordService.listByPatientId(patientId);
 
         // Then
         assertThat(records).isNotEmpty();

@@ -11,6 +11,16 @@ CREATE TABLE IF NOT EXISTS platform.audit_log (
     created_at  TIMESTAMP NOT NULL DEFAULT now() -- 创建时间
 );
 
+-- R-15: 平台元数据/水位表。
+-- 背景:启动期的统一账号迁移(migrateUsers)与读模型全量重建(VisitReadModelService.initAll)
+-- 原本每次启动都无条件全表扫描,10 万规模下启动近 18 分钟。引入本表记录"已完成到哪个版本",
+-- 日常启动命中断路即直接跳过,只有水位缺失/版本升级时才执行重活。
+CREATE TABLE IF NOT EXISTS platform.meta (
+    key         VARCHAR(100) PRIMARY KEY,   -- 水位键:read_model_init_version / user_migration_version 等
+    value       VARCHAR(500),               -- 水位值(如版本号)
+    updated_at  TIMESTAMP NOT NULL DEFAULT now() -- 更新时间
+);
+
 -- 门诊挂号/分诊排队
 CREATE TABLE IF NOT EXISTS clinical.registration (
     id          BIGSERIAL PRIMARY KEY,
@@ -169,6 +179,10 @@ CREATE TABLE IF NOT EXISTS dispatch.queue_board (
 
 -- ===================== 表注释 =====================
 COMMENT ON TABLE platform.audit_log     IS '审计日志';
+COMMENT ON TABLE platform.meta          IS '平台元数据/水位(R-15:记录启动期一次性重活的水位,避免每次启动全量重建)';
+COMMENT ON COLUMN platform.meta.key       IS '水位键:read_model_init_version/user_migration_version';
+COMMENT ON COLUMN platform.meta.value     IS '水位值';
+COMMENT ON COLUMN platform.meta.updated_at IS '更新时间';
 COMMENT ON TABLE clinical.visit        IS '门诊就诊';
 COMMENT ON TABLE clinical.orders       IS '医嘱(药品/检查/检验)';
 COMMENT ON TABLE clinical.charge       IS '收费记录';
@@ -302,6 +316,85 @@ CREATE INDEX IF NOT EXISTS idx_visit_rm_doctor_name ON clinical.visit_read_model
 CREATE INDEX IF NOT EXISTS idx_visit_rm_chief_complaint ON clinical.visit_read_model(chief_complaint);
 CREATE INDEX IF NOT EXISTS idx_visit_rm_visit_time ON clinical.visit_read_model(visit_time DESC);
 CREATE INDEX IF NOT EXISTS idx_visit_rm_dept_id ON clinical.visit_read_model(dept_id);
+
+-- ===================== R-04:热路径索引(性能地基) =====================
+-- 背景:除读模型(visit_read_model)与病历(medical_record)外,所有业务基表的
+-- 外键与过滤列都没有二级索引。10 万 visit / 30 万 orders / 30 万 charge 时,
+-- 单次 getDetail 触发 2 次 30 万行 Seq Scan,listPage 每页扫描约 600 万行。
+-- 这些索引是 PERF-02/05/06/14 等一系列"全表扫描"问题得以根治的前提。
+--
+-- 全部使用 IF NOT EXISTS,重复执行安全。
+-- 注意:本脚本只在全新 pg-data 卷的 initdb 阶段执行,故用普通建法;
+-- 对已有数据的存量库请改用 CREATE INDEX CONCURRENTLY(避免建索引期间锁表)。
+CREATE INDEX IF NOT EXISTS idx_visit_patient_id    ON clinical.visit(patient_id);
+CREATE INDEX IF NOT EXISTS idx_visit_dept_id       ON clinical.visit(dept_id);
+CREATE INDEX IF NOT EXISTS idx_visit_doctor_id     ON clinical.visit(doctor_id);
+CREATE INDEX IF NOT EXISTS idx_visit_status        ON clinical.visit(status);
+CREATE INDEX IF NOT EXISTS idx_visit_created_at    ON clinical.visit(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_orders_visit_id     ON clinical.orders(visit_id);
+CREATE INDEX IF NOT EXISTS idx_orders_exec_dept    ON clinical.orders(execution_dept_id);
+CREATE INDEX IF NOT EXISTS idx_orders_type_status  ON clinical.orders(type, status);
+CREATE INDEX IF NOT EXISTS idx_charge_visit_id     ON clinical.charge(visit_id);
+CREATE INDEX IF NOT EXISTS idx_charge_visit_pay    ON clinical.charge(visit_id, pay_status);
+CREATE INDEX IF NOT EXISTS idx_charge_order_id     ON clinical.charge(order_id);
+CREATE INDEX IF NOT EXISTS idx_reg_dept_created    ON clinical.registration(dept_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_reg_patient_id      ON clinical.registration(patient_id);
+CREATE INDEX IF NOT EXISTS idx_reg_visit_id        ON clinical.registration(visit_id);
+CREATE INDEX IF NOT EXISTS idx_reg_status          ON clinical.registration(status);
+CREATE INDEX IF NOT EXISTS idx_slot_pkg_date       ON booking.slot(package_id, exam_date);
+CREATE INDEX IF NOT EXISTS idx_slot_date           ON booking.slot(exam_date);
+CREATE INDEX IF NOT EXISTS idx_appt_patient        ON booking.appointment(patient_id);
+CREATE INDEX IF NOT EXISTS idx_appt_slot           ON booking.appointment(slot_id);
+CREATE INDEX IF NOT EXISTS idx_appt_package        ON booking.appointment(package_id);
+CREATE INDEX IF NOT EXISTS idx_appt_status         ON booking.appointment(status);
+CREATE INDEX IF NOT EXISTS idx_exam_item_package   ON booking.exam_item(package_id);
+CREATE INDEX IF NOT EXISTS idx_task_appt           ON dispatch.exam_task(appointment_id);
+CREATE INDEX IF NOT EXISTS idx_task_station_status ON dispatch.exam_task(station, status, seq);
+CREATE INDEX IF NOT EXISTS idx_task_patient_status ON dispatch.exam_task(patient_id, status);
+CREATE INDEX IF NOT EXISTS idx_board_station       ON dispatch.queue_board(station, status, seq);
+CREATE INDEX IF NOT EXISTS idx_board_created_at    ON dispatch.queue_board(created_at DESC);
+-- R-37: 看板不传 station 时按状态白名单过滤(剔除 DONE),需要以 status 打头的索引才能避免全表扫描。
+-- 注意与 idx_board_station 的区别:那把索引前导列是 station,只覆盖"指定工位"的查询路径。
+CREATE INDEX IF NOT EXISTS idx_board_status_seq    ON dispatch.queue_board(status, seq);
+CREATE INDEX IF NOT EXISTS idx_report_visit        ON report.record(visit_id);
+CREATE INDEX IF NOT EXISTS idx_report_patient      ON report.record(patient_id);
+CREATE INDEX IF NOT EXISTS idx_report_type_status  ON report.record(type, status);
+CREATE INDEX IF NOT EXISTS idx_report_appointment  ON report.record(appointment_id);
+CREATE INDEX IF NOT EXISTS idx_rx_visit            ON pharmacy.prescription(visit_id);
+CREATE INDEX IF NOT EXISTS idx_rx_patient          ON pharmacy.prescription(patient_id);
+CREATE INDEX IF NOT EXISTS idx_rx_status           ON pharmacy.prescription(status);
+CREATE INDEX IF NOT EXISTS idx_rx_item_rx          ON pharmacy.prescription_item(prescription_id);
+CREATE INDEX IF NOT EXISTS idx_rx_item_order       ON pharmacy.prescription_item(order_id);
+CREATE INDEX IF NOT EXISTS idx_lab_req_visit       ON lab.requisition(visit_id);
+CREATE INDEX IF NOT EXISTS idx_lab_req_patient     ON lab.requisition(patient_id);
+CREATE INDEX IF NOT EXISTS idx_lab_req_status      ON lab.requisition(status);
+CREATE INDEX IF NOT EXISTS idx_lab_item_req        ON lab.result_item(requisition_id);
+CREATE INDEX IF NOT EXISTS idx_lab_item_order      ON lab.result_item(order_id);
+CREATE INDEX IF NOT EXISTS idx_audit_created       ON platform.audit_log(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_actor         ON platform.audit_log(actor);
+CREATE INDEX IF NOT EXISTS idx_audit_action        ON platform.audit_log(action);
+
+-- ===================== R-20:模糊搜索索引(pg_trgm) =====================
+-- 背景:就诊列表与患者搜索用 LIKE '%关键字%'(前置通配),B-tree 索引一律失效,
+-- 10 万行即退化为全表扫描。PostgreSQL 的 pg_trgm 扩展提供三元组 GIN 索引,
+-- 可让'%kw%'这种前置通配也走索引,因此**无需改动 Java 查询**。
+--
+-- 注意:
+--  1) CREATE EXTENSION 需要超级用户权限(本 compose 用的 postgres 是超级用户,OK);
+--     若目标库无权限,需由 DBA 预先执行,否则本节索引创建失败(不影响其它表)。
+--  2) 中文场景下三元组切分效果有限(按字符而非词),数据量继续增大时应改用
+--     zhparser + tsvector 的全文检索方案(P2)。当前规模下 trgm 已能把
+--     '%kw%' 扫描从"全表"降到"仅匹配行数级别"。
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+CREATE INDEX IF NOT EXISTS idx_patient_name_trgm   ON patient.patient USING GIN (name gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_patient_phone_trgm  ON patient.patient USING GIN (phone gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_visit_rm_patient_name_trgm
+    ON clinical.visit_read_model USING GIN (patient_name gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_visit_rm_doctor_name_trgm
+    ON clinical.visit_read_model USING GIN (doctor_name gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_visit_rm_chief_complaint_trgm
+    ON clinical.visit_read_model USING GIN (chief_complaint gin_trgm_ops);
 
 -- ===================== 药事域 =====================
 CREATE SCHEMA IF NOT EXISTS pharmacy;

@@ -6,6 +6,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.util.List;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -55,7 +57,8 @@ class RegistrationServiceTest {
         @DisplayName("挂号成功:生成排队号、WAITING 状态、正确设置 patientId/deptId")
         void register_success() {
             when(patientService.get(42L)).thenReturn(new com.hospital.core.patient.domain.Patient());
-            when(registrationMapper.selectCount(any())).thenReturn(3L);
+            // R-38: 排队号改由 selectObjs(COALESCE(MAX(queue_no),0)) 计算,原 selectCount 桩失配 → 改桩
+            when(registrationMapper.selectObjs(any())).thenReturn(List.of((Object) 3));
 
             Registration result = service.register(42L, 7L, 10L);
 

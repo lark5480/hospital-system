@@ -46,9 +46,11 @@ const editFormRef = ref<FormInstance>()
 async function fetchList() {
   loading.value = true
   try {
+    // R-07: 后端患者列表已改为分页(pageSize 上限 500),这里显式取满一页
+    // TODO(P1): 改用 /api/patient/names?ids= 按需取姓名,避免管理页全量拉取
     list.value = searchKeyword.value
       ? await patientApi.searchPatients(searchKeyword.value)
-      : await patientApi.listPatients()
+      : await patientApi.listPatients({ pageNum: 1, pageSize: 500 })
   } catch { ElMessage.error('加载失败') }
   finally { loading.value = false }
 }
@@ -62,7 +64,10 @@ function openEdit(row: Patient) {
   Object.assign(form, {
     id: row.id, name: row.name, gender: row.gender,
     birthday: row.birthday || '', phone: row.phone || '',
-    idCard: row.idCard || '', username: row.username || ''
+    // R-07: 列表/详情出参身份证已脱敏(含 *),原样回填会过不了身份证格式校验,
+    //       导致任何人都保存不了;故置空,由 placeholder 提示"留空表示不修改"
+    idCard: row.idCard && row.idCard.includes('*') ? '' : (row.idCard || ''),
+    username: row.username || ''
   })
   editDialog.value = true
 }
@@ -178,13 +183,22 @@ onActivated(fetchList)
     </el-dialog>
 
     <el-dialog v-model="editDialog" title="编辑患者" width="480px">
+      <!-- R-07: 姓名/身份证/手机号属身份标识字段,后端仅 system:admin 可改;非管理员置灰,避免"改了不生效" -->
+      <el-alert v-if="!canAdmin" type="info" :closable="false" show-icon style="margin-bottom:12px"
+                title="姓名、身份证号、手机号为身份标识字段，需管理员权限才能修改" />
       <el-form ref="editFormRef" :model="form" :rules="rules" label-width="90px">
-        <el-form-item label="姓名" prop="name"><el-input v-model="form.name" /></el-form-item>
+        <el-form-item label="姓名" prop="name"><el-input v-model="form.name" :disabled="!canAdmin" /></el-form-item>
         <el-form-item label="性别" prop="gender"><el-select v-model="form.gender" style="width:100%"><el-option label="男" value="M" /><el-option label="女" value="F" /></el-select></el-form-item>
         <el-form-item label="出生日期" prop="birthday"><el-date-picker v-model="form.birthday" type="date" value-format="YYYY-MM-DD" placeholder="选择出生日期" style="width:100%" :disabled-date="(d: Date) => d > new Date()" format="YYYY年MM月DD日" /></el-form-item>
-        <el-form-item label="手机号" prop="phone"><el-input v-model="form.phone" placeholder="11位手机号" maxlength="11" /></el-form-item>
-        <el-form-item label="身份证" prop="idCard"><el-input v-model="form.idCard" placeholder="18位(选填)" maxlength="18" /></el-form-item>
-        <el-form-item label="账号"><el-input v-model="form.username" /></el-form-item>
+        <el-form-item label="手机号" prop="phone">
+          <el-tooltip :disabled="canAdmin" content="修改手机号需管理员权限，且会同步更新该患者的登录账号" placement="top">
+            <el-input v-model="form.phone" placeholder="11位手机号" maxlength="11" :disabled="!canAdmin" />
+          </el-tooltip>
+        </el-form-item>
+        <el-form-item label="身份证" prop="idCard">
+          <el-input v-model="form.idCard" :placeholder="canAdmin ? '18位(留空表示不修改)' : '已脱敏，需管理员权限修改'" maxlength="18" :disabled="!canAdmin" />
+        </el-form-item>
+        <el-form-item label="账号"><el-input v-model="form.username" disabled /></el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="editDialog = false">取消</el-button>
