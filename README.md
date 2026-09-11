@@ -77,6 +77,8 @@ browser ──► hospital-web :5173
 - **RBAC**:七权(`visit:entry`/`visit:audit`/`order:execute`/`pharmacy:dispense`/`charge:pay`/`system:admin`/`patient:booking`),角色↔权限映射入库(`platform.role` + `platform.role_authority`),管理员后台可配。
 - **菜单过滤**:后端 `MenuService` 从 `platform.menu` + `platform.menu_authority` 表加载菜单树,按当前用户 authorities 动态裁剪。
 - **SSE 实时推送**:浏览器原生 `EventSource` 无法自定义请求头,因此**不把长期 JWT 放进 URL**;改为先 `POST /api/core/sse/ticket`(走 Bearer)换取一个 **60 秒有效、`scope=sse` 的短期 ticket**,再以 `?ticket=` 订阅(R-34)。该 ticket **无法用于普通 API** —— core 与 notification-service 两侧都显式拒绝 `scope=sse`。
+  > **本地零配置可跑通**:core 非 prod 未注入 `APP_JWT_SECRET` 时会生成随机密钥,notification-service 必然校验不了 ticket,因此它选择「放行 + WARN」而非 fail-closed(否则本地联调直接坏掉)。
+  > **要在本地验证完整鉴权链路**,请给两个服务注入**同一把** `APP_JWT_SECRET`(见 `.env.example`)。严格路径本身已由 `NotificationSseSecurityTest` / `NotificationRestSecurityTest` 覆盖,本地放行不会掩盖鉴权缺陷。
 - **文件访问**:一律经 core 的 `/api/core/files` 代理完成鉴权与归属校验,file-service 只在内网可达(R-62)。
 - **未来接外部 IdP**:只需替换 login 环节(校验外部 token → 换签自有 JWT),过滤器与 SecurityConfig 不动。
 
