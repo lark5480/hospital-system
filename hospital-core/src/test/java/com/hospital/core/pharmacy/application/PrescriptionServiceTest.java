@@ -3,6 +3,7 @@ package com.hospital.core.pharmacy.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -83,6 +84,31 @@ class PrescriptionServiceTest {
             assertThatThrownBy(() -> service.createFromVisit(10L, 5L))
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("无可创建");
+        }
+
+        @Test
+        @DisplayName("R-64 幂等:已有 PENDING 处方且该就诊医嘱已被完全覆盖 → 返回既有处方,不抛异常、不重复插明细")
+        void createFromVisit_existingPendingNoNewOrders_returnsExisting() {
+            when(visitService.get(10L)).thenReturn(visit(10L));
+            when(orderMapper.selectList(any())).thenReturn(List.of(medOrder(1L, "头孢")));
+
+            Prescription existing = new Prescription();
+            existing.setId(9L);
+            existing.setVisitId(10L);
+            existing.setStatus("PENDING");
+            when(prescriptionMapper.selectOne(any())).thenReturn(existing);
+
+            PrescriptionItem covered = new PrescriptionItem();
+            covered.setPrescriptionId(9L);
+            covered.setOrderId(1L);
+            when(itemMapper.selectList(any())).thenReturn(List.of(covered));
+
+            Prescription result = service.createFromVisit(10L, 5L);
+
+            // 语义变更:原先这里抛 IllegalStateException,调用方(前端)靠"是不是 409"猜"没东西可追加"。
+            // 现在本方法还会被确单事件监听器与对账 job 调用 —— 对它们而言"没有新医嘱"是正常的无事可做。
+            assertThat(result).isSameAs(existing);
+            verify(itemMapper, never()).insert(any(PrescriptionItem.class));
         }
     }
 

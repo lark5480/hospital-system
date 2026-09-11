@@ -86,6 +86,17 @@ public class LabService {
         }
     }
 
+    /**
+     * R-64 对账辅助:列出需要补建检验申请的就诊单 ID
+     * (已确单但仍有检验医嘱未被任何申请覆盖 —— 见 {@link LabResultItemMapper#selectVisitIdsWithUncoveredLabOrders()})。
+     *
+     * <p>只读,自身不开事务。补建由调用方({@code DownstreamDocReconcileJob})<b>逐单</b>调用
+     * {@link #createFromVisit},这样每张就诊单各自一个事务,单张失败不会拖垮整轮对账。
+     */
+    public List<Long> findVisitIdsNeedingReconcile() {
+        return resultItemMapper.selectVisitIdsWithUncoveredLabOrders();
+    }
+
     @Transactional
     public LabRequisition createFromVisit(Long visitId, Long doctorId, List<Long> orderIds) {
         Visit visit = visitMapper.selectById(visitId);
@@ -117,8 +128,14 @@ public class LabService {
                     .filter(o -> !existingOrderIds.contains(o.getId()))
                     .toList();
 
+            // R-64: 由"抛异常"改为幂等返回。
+            // 原先这里抛 IllegalStateException,是因为调用方只有前端、靠"是不是 409"来判断"没东西可追加"。
+            // 现在本方法还会被 VisitConfirmedLabListener(事件重投)与 DownstreamDocReconcileJob(对账)
+            // 调用 —— 对它们而言"没有新医嘱"是**正常的无事可做**,不是错误:
+            // 抛异常会让前者把噪音记成 ERROR、让后者把整轮对账标记为失败。
+            // 保持语义:该就诊的检验医嘱已被现有申请完全覆盖,无需开工。
             if (newOrders.isEmpty()) {
-                throw new IllegalStateException("该就诊无可追加的检验医嘱");
+                return existingPending;
             }
 
             for (Order o : newOrders) {
@@ -136,8 +153,17 @@ public class LabService {
             throw new IllegalStateException("该就诊无可创建的检验医嘱");
         }
 
-        // 确单:锁定就诊单,此后不可再追加/修改/取消医嘱
-        visitService.confirm(visitId);
+        // 确单:锁定就诊单,此后不可再追加/修改/取消医嘱。
+        //
+        // 必须幂等 —— 只在就诊仍是草稿(CREATED)时才确单:
+        // 前端「确单」流程本身已经先调过 visitService.confirm(),紧接着才调本方法同步生成检验申请;
+        // 若此处无条件再调一次,状态机会拒绝(CONFIRMED / IN_PROGRESS → CONFIRMED 属非法转换),
+        // 抛出的异常会让**整个事务回滚** —— 结果是检验申请永远创建不出来,
+        // 而前端只把非 409 的错误吞成一句 warning toast,查库才发现 lab.requisition 一条都没有。
+        Visit currentVisit = visitMapper.selectById(visitId);
+        if (currentVisit != null && "CREATED".equals(currentVisit.getStatus())) {
+            visitService.confirm(visitId);
+        }
 
         // 医生以就诊单为准(确单时若未指定会回填当前操作医生),传参仅兜底
         Visit confirmedVisit = visitMapper.selectById(visitId);

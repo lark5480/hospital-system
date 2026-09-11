@@ -5,8 +5,8 @@
 - **参与 Agent**：SECURITY（安全）、PERFORMANCE（性能）、TESTING（测试质量）
 - **流程**：第 1 轮三方独立审查 → 第 2 轮交叉质询（反驳 / 降级 / 升级 / 补充 / 自我修正 / 预判辩护）→ 第 3 轮主席收敛
 - **产出**：61 条问题（6 Critical / 22 High / 26 Medium / 7 Low），含 8 条质询后新增、9 条质询后改级
-- **实施状态（2026-09-11 更新）**：P0 + P1 + P2 已全部落盘；复核中发现的 2 条审核漏项（R-62 Critical / R-63 High）已修复；原先 5 条「部分修复」（R-11 / R-21 / R-33 / R-34 / R-47）亦已收尾 —— 合计 63 条：**62 项已修复、1 项已缓解、0 项部分修复**。
-- **验证覆盖**：后端 289 用例 + 前端 19 用例全绿，前端 `type-check` 与构建通过；**浏览器端到端链路（体检预约 → 分诊排队 → 自助取消 → 看板联动）已于 2026-09-11 在本地真实环境执行**。唯一未做压测验证的是 R-29（靠根因治理间接缓解，见「遗留」）。详见下方「实施状态总览」
+- **实施状态（2026-09-11 更新）**：P0 + P1 + P2 已全部落盘；复核中发现的 3 条审核漏项（R-62 Critical / R-63 High / R-64 High）已修复；原先 5 条「部分修复」（R-11 / R-21 / R-33 / R-34 / R-47）亦已收尾 —— 合计 64 条：**63 项已修复、1 项已缓解、0 项部分修复**。
+- **验证覆盖**：后端 334 用例（core 284 / notification 24 / file-service 20 / gateway 6）+ 前端 19 用例全绿，前端 `type-check` 与构建通过；**两条浏览器端到端链路已于 2026-09-11 在本地真实环境执行**：① 体检预约 → 分诊排队 → 自助取消 → 看板联动；② 新建就诊 → 加检验医嘱 → 确单自动生成检验申请 → 追加医嘱自动并入同一申请（含检验科账号可见性验证、草稿态不发事件的反向守护、以及**对账任务在真实 10 分钟边界自行触发并补建 + 留痕**）。唯一未做压测验证的是 R-29（靠根因治理间接缓解，见「遗留」）。详见下方「实施状态总览」
 - **定级标准**：
   - **Critical**：可直接导致批量敏感数据泄露 / 权限完全失守，或线上必然不可用
   - **High**：需要低门槛前置条件即可造成实质损害，或数据量到 10 万级必然劣化到不可用
@@ -112,6 +112,28 @@
     | 守护测试 | `GatewayRouteGuardTest` 改为**反向断言**（路由 id / `/api/files` 谓词 / 8103 URI 都不得存在）；原 `GatewayDefaultTokenContextTest` 的契约已被反转，重写为 `GatewayInternalTokenAbsenceTest`（网关不得持有令牌配置、不得代发该头）；新增 `FileProxyControllerTest` 10 个用例锁定归属覆盖、403 语义与错误翻译 |
   - **修复后的边界**：file-service 只在内网可达；对外唯一入口是 core 的 `/api/core/files`，受 JWT 鉴权链约束。注意 `list` 仍支持全量语义（管理台需要），这依赖"内网可达"这一前提 —— 若将来暴露 8103，必须先给 file-service 补真正的鉴权。
 - **R-63【High】`VisitService.listExams()` 循环内逐行 `visitMapper.selectById`**：先全量加载 EXAM 医嘱，再对每条回查就诊/患者/医生。属 R-19 同类 N+1，但位置不在 R-19 列的三个类里，故未被覆盖。已改为一次 `selectBatchIds` + 分组，查询次数由 `1+N` 降为 `1+1`。
+- **R-64【High】「确单 → 生成检验申请/处方」原先由浏览器编排，属没有补偿的客户端编排**。
+  - **诊断**：领域不变式是「就诊单已确单 ⇒ 每条 LAB/MEDICATION 医嘱都被对应的下游单据明细覆盖」，但该不变式由**前端维持** —— `确单`（HTTP 1）只改状态，生成检验申请/处方是**另外的 HTTP 2、3**。HTTP 1 已提交而 HTTP 2 失败时，无回滚、无重试、无对账，单据**永久缺失**。
+  - **实证（同一根因，三种面目）**：① 请求被 Bean Validation 拦在切面之前 → **连审计都不留痕**（实测：库里有 `CONFIRM_VISIT` + `CREATE_PRESCRIPTION`，唯独没有 `CREATE_REQUISITION`）；② 第 2 个请求内部异常 → `CREATE_REQUISITION FAILED: 非法就诊状态转换: IN_PROGRESS → CONFIRMED`，异常令**整个事务回滚**；③ 判断依据是前端本地快照 `store.detail.orders`，快照 stale 就**静默跳过**。此外 `hasLabOrders` 依赖的"医嘱是否创建成功"还受 `unitPrice` 校验影响（留 0 则 400，仅一句转瞬即逝的 toast）—— 一次会话内三种面目全部复现。
+  - **修复（方案 A + D）**：
+    | 层 | 做法 |
+    |---|---|
+    | 事件 | 新增 `VisitOrdersConfirmedEvent`（自包含快照：医嘱 id 按 LAB/MEDICATION 分桶）。**两个触发点同一语义**：`confirm()` 批量（当时所有 `CREATED` 医嘱）、`addOrder()` 单条（就诊已确单时追加的医嘱即刻锁定）—— 缺后者就会"确单后再追加检验医嘱 → 检验科永远看不到"。两个桶都为空时不发事件 |
+    | 监听 | `VisitConfirmedLabListener` / `VisitConfirmedPrescriptionListener`：`@TransactionalEventListener(AFTER_COMMIT)` + `REQUIRES_NEW`，且**刻意吞掉异常**（确单事务已提交，抛出只会让确单接口 500 而就诊其实已确单）。这与既有 `booking → dispatch` 范式一致，`clinical` 不依赖 `lab/pharmacy`（ArchUnit 红线） |
+    | 幂等 | 两个 `createFromVisit` 的"已有 PENDING 单据且无新医嘱"由**抛异常改为返回既有单据** —— 对事件重投与对账而言"没东西可追加"是正常无事可做，抛异常只会制造假错误（前端也不必再靠"是不是 409"猜语义） |
+    | 对账（D） | 新增 `DownstreamDocReconcileJob`（`app.reconcile.cron`，默认每 10 分钟）：按 LEFT JOIN 找出"已确单但医嘱未被下游单据覆盖"的就诊单并逐单补建（每单独立事务，单张失败不影响其它）。**这是"监听器吞异常"这一取舍的必要安全网**，否则只是把失败从浏览器搬到服务端。正常每轮补建 0 单，一旦出现补建即 WARN |
+    | 前端 | `VisitDetailView.vue` 删除 4 处第二次调用（`doConfirm` 2 处、`submitOrder` 2 处），确单/追加回归纯状态变更；顺带补单价 `>0` 的前置校验（原先前端不发，让服务端 400 一闪而过） |
+  - **取舍（明确记录）**：选**最终一致**而非强一致 —— 确单是临床主流程，不能被下游单据拖垮。代价是"生成异步可能失败"，由 D 兜底。监听器为同步 AFTER_COMMIT（非 `@Async`），故确单 HTTP 响应返回时生成已完成，**前端无需改动时序、也不会出现"确单后立刻看检验申请页为空"**。
+  - **审计轨迹（已显式补回）**：生成不再经 Controller，而 `@AuditLog` 只能拦截 Controller 方法 ⇒ 切面**记不到账**，`CREATE_REQUISITION` / `CREATE_PRESCRIPTION` 会从轨迹里消失。故把切面里的写入逻辑抽为公共组件 `platform.infrastructure.AuditRecorder`（切面与监听器/定时任务共用同一套 R-31 失败不外抛、R-44 异步+降级同步语义，避免长出第二套实现），由监听器与对账任务显式补写：
+    | 触发 | actor | detail |
+    |---|---|---|
+    | 确单批量 | 真实登录医生（监听器仍跑在请求线程上，安全上下文可用） | `触发: 确单; order_ids=[...]` |
+    | 确单后追加 | 同上 | `触发: 确单后追加医嘱; order_ids=[...]` |
+    | 对账补建 | `system`（无安全上下文） | `触发: 对账补建(确单时生成失败或数据异常导入)` |
+
+    动作名沿用 Controller 路径的 `CREATE_REQUISITION` / `CREATE_PRESCRIPTION`，既有审计查询口径不变；**写入放在生成成功之后**，避免"审计说建了、库里没有"。事件新增 `Trigger` 字段承载触发原因（回答"同一张就诊单为什么会有两张申请"）。**注意** `AuditRecorder` 必须放 `platform.infrastructure` 而非 `support` —— 它要访问 `platform.domain.AuditLog`，而 ArchUnit 分层规则只允许 api/application/infrastructure 访问 domain（放 support 直接构建失败）。
+  - **行为变化（需知悉）**：`POST /api/lab/requisitions`、`/api/pharmacy/prescriptions` 在"无新医嘱"时由 409/异常改为 **200 + 既有单据**（前端已不再调用这两个接口，但仍可用作手工补建）。
+  - **验证**：`VisitConfirmDownstreamIntegrationTest`（4 例，**不带 `@Transactional`** —— 否则 AFTER_COMMIT 监听器根本不触发、单测会给出假绿）覆盖确单生成、追加并入同一申请、无医嘱不建空申请、以及对账 SQL 补建；另有 `VisitServiceDownstreamEventTest`（7 例，两个触发点 + 反向守护：草稿态与 EXAM 不发事件）、两个监听器单测（10 例，跳过/透传/异常不外抛）、`DownstreamDocReconcileJobTest`（4 例，含"单张失败不影响其它"）、幂等用例 2 例。
 - **R-39 暴露的类型债**：开启按需引入后若生成 `components.d.ts`，`vue-tsc` 会立刻暴露 **34 个既有类型问题**（`el-table` 作用域插槽的 row 被推断为 `DefaultRow`、`el-tag :type` 传入了含空串的联合类型）。本轮为守住"type-check 0 错误"基线关闭了 dts 生成；修完这 34 处即可打开，换取组件级类型安全
 - **R-56 的行为变化**：改 sessionStorage 后**新开标签页不再共享登录态**（单标签刷新仍免登）。这是收窄 XSS 窗口的代价，两全需 httpOnly Cookie + CSRF（P3）
 - **R-60 的运维项**：容器 / CI（ubuntu）无中文字体，PDF 中文会走降级（方框）。建议镜像挂载字体或设置 `PDF_FONT_PATH`

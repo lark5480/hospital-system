@@ -88,6 +88,17 @@ public class PrescriptionService {
         }
     }
 
+    /**
+     * R-64 对账辅助:列出需要补建处方的就诊单 ID
+     * (已确单但仍有药品医嘱未被任何处方覆盖 —— 见 {@link PrescriptionItemMapper#selectVisitIdsWithUncoveredMedicationOrders()})。
+     *
+     * <p>只读,自身不开事务。补建由调用方({@code DownstreamDocReconcileJob})<b>逐单</b>调用
+     * {@link #createFromVisit},这样每张就诊单各自一个事务,单张失败不会拖垮整轮对账。
+     */
+    public List<Long> findVisitIdsNeedingReconcile() {
+        return itemMapper.selectVisitIdsWithUncoveredMedicationOrders();
+    }
+
     /** 从就诊的药品医嘱创建处方(只取 status=CREATED 的医嘱)。创建后同时确单锁定就诊单。
      *  若已有 PENDING 处方,将新药品医嘱追加到现有处方(支持二次诊断追加药品)。 */
     @Transactional
@@ -118,8 +129,11 @@ public class PrescriptionService {
                     .filter(o -> !existingOrderIds.contains(o.getId()))
                     .toList();
 
+            // R-64: 由"抛异常"改为幂等返回。理由同 LabService#createFromVisit ——
+            // 本方法现在还会被 VisitConfirmedPrescriptionListener(事件重投)与对账任务调用,
+            // 对它们而言"没有新药品医嘱"是正常的无事可做,抛异常只会制造假错误。
             if (newOrders.isEmpty()) {
-                throw new IllegalStateException("该就诊无可追加的药品医嘱");
+                return existingPending;
             }
 
             for (Order o : newOrders) {

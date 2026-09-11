@@ -28,6 +28,7 @@ import com.hospital.core.clinical.domain.OrderCreatedEvent;
 import com.hospital.core.clinical.domain.OrderUpdatedEvent;
 import com.hospital.core.clinical.domain.Visit;
 import com.hospital.core.clinical.domain.VisitCreatedEvent;
+import com.hospital.core.clinical.domain.VisitOrdersConfirmedEvent;
 import com.hospital.core.clinical.domain.VisitReadModel;
 import com.hospital.core.clinical.domain.VisitStatus;
 import com.hospital.core.clinical.domain.VisitStatusEvent;
@@ -161,7 +162,50 @@ public class VisitService {
         visit.transitTo(VisitStatus.CONFIRMED);
         visitMapper.updateById(visit);
         readModelService.refresh(visitId);
+
+        // R-64: 确单后由服务端发布"这些医嘱需要有下游单据"事件,下游模块各自订阅生成。
+        // 原先这一步由浏览器在确单成功后再发两个 HTTP,属没有补偿的客户端编排 ——
+        // 请求丢失/被校验拦/中途失败都会让单据永久缺失,且前端只把非 409 的错误吞成一句 warning toast。
+        //
+        // 注意:此处只发布,不在此事务内生成 —— 下游监听器是 AFTER_COMMIT + REQUIRES_NEW,
+        // 生成失败不会回滚确单(刻意取舍:确单是主流程,不能被下游拖垮),失败由对账 job 兜底。
+        // 另:方法开头对 CONFIRMED 的幂等提前返回,保证重复确单不会重复触发下游。
+        List<Order> createdOrders = orderMapper.selectList(new LambdaQueryWrapper<Order>()
+                .eq(Order::getVisitId, visitId)
+                .eq(Order::getStatus, "CREATED"));
+        publishOrdersConfirmedEvent(visit, createdOrders, VisitOrdersConfirmedEvent.Trigger.CONFIRM);
+
         return getDetail(visitId);
+    }
+
+    /**
+     * R-64: 发布 {@link VisitOrdersConfirmedEvent} —— "这批医嘱需要有对应的下游单据(检验申请/处方)"。
+     *
+     * <p>抽出私有方法是因为它有<b>两个触发点</b>,语义完全一致、只是范围不同:
+     * <ul>
+     *   <li>{@link #confirm()} —— 确单,批量(当时所有 {@code status=CREATED} 的医嘱);</li>
+     *   <li>{@link #addOrder} —— 就诊已确单时追加医嘱,单条(该医嘱即刻锁定)。</li>
+     * </ul>
+     *
+     * <p>两个桶都为空时不发布 —— 没有下游动作可做,空事件只会污染监听器日志与测试断言。
+     * 监听器在确单事务<b>提交后</b>执行,故这里不需要 try/catch:发布本身不会失败。
+     */
+    private void publishOrdersConfirmedEvent(Visit visit, List<Order> orders,
+                                             VisitOrdersConfirmedEvent.Trigger trigger) {
+        if (visit == null || orders == null || orders.isEmpty()) {
+            return;
+        }
+        VisitOrdersConfirmedEvent event = new VisitOrdersConfirmedEvent(
+                visit.getId(),
+                visit.getPatientId(),
+                visit.getDoctorId(),
+                orders.stream().filter(o -> "LAB".equals(o.getType())).map(Order::getId).toList(),
+                orders.stream().filter(o -> "MEDICATION".equals(o.getType())).map(Order::getId).toList(),
+                trigger);
+        if (event.isEmpty()) {
+            return;
+        }
+        eventPublisher.publishEvent(event);
     }
 
     /** 就诊内追加一条医嘱;同一事务生成对应收费。FINISHED 状态拒绝追加;其余状态均可(含回诊追加)。 */
@@ -212,6 +256,15 @@ public class VisitService {
                     visitId, visit.getPatientId(), patientName,
                     order.getType(), order.getItemName(), targetRole,
                     order.getExecutionDeptId()));
+        }
+
+        // R-64: 就诊已确单(CONFIRMED / IN_PROGRESS)时追加的医嘱 —— 它即刻锁定,
+        // 必须有对应的下游单据(检验申请 / 处方),否则会出现"确单后再追加检验医嘱 → 检验科永远看不到"。
+        // 这是本事件的**第二个触发点**,与确单共用同一个语义与同一批监听器。
+        // (草稿状态(CREATED)的追加不发事件:草稿不生成下游单据,等确单时批量处理。)
+        if (visit != null && VisitStatus.of(visit.getStatus()) != VisitStatus.CREATED) {
+            publishOrdersConfirmedEvent(visit, List.of(order),
+                    VisitOrdersConfirmedEvent.Trigger.APPEND_ORDER);
         }
 
         // R-16: 复用本次刷新已算好的读模型(名称/金额/缴费状态),避免 refresh 后再 getDetail() 重查一遍
