@@ -23,6 +23,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.hospital.core.booking.domain.Appointment;
+import com.hospital.core.booking.domain.AppointmentCancelledEvent;
 import com.hospital.core.booking.domain.AppointmentCreatedEvent;
 import com.hospital.core.booking.domain.AppointmentStatusEvent;
 import com.hospital.core.booking.domain.ExamItem;
@@ -262,6 +263,82 @@ public class BookingService {
                 appt.getId(), patientId, patientName, packageId, briefs));
 
         return appt;
+    }
+
+    /**
+     * C 端患者自助取消预约:置 CANCELLED + 释放号源 + 发布取消事件。
+     *
+     * <p><b>为什么只有 BOOKED 可取消</b>:
+     * <ul>
+     *   <li>{@code CHECKED_IN}(已到院)/ {@code DONE}(已完成)属于<b>线下流程</b>——患者人已经在院、
+     *       检查可能已经开始甚至已出报告,这时让 C 端一键取消会把现场排队、收费、报告全部打成悬空数据,
+     *       应走前台/医生端的线下作废流程,而不是自助取消;</li>
+     *   <li>{@code CANCELLED}(已取消)必须<b>显式报错而不是静默成功</b>:静默成功会让用户以为
+     *       "这次操作生效了",从而掩盖真实状态(例如其实是别人/定时任务取消的),也可能让人误以为
+     *       号源被再次释放。重复取消返回 409 语义,是幂等保护的常规做法(拒绝而非吞掉)。</li>
+     * </ul>
+     *
+     * <p><b>为什么必须联动 dispatch</b>:见 {@link AppointmentCancelledEvent} 的类注释——
+     * 预约在 dispatch 侧已展开成 N 条 {@code ExamTask} 与 {@code queue_board} 投影,
+     * 不清理的话患者会继续留在排队队列与看板上。本方法只负责发事件,
+     * 由 dispatch 侧监听并清理,保持模块单向依赖(booking 不依赖 dispatch)。
+     *
+     * <p><b>号源释放</b>:复用 {@code cleanupExpiredAppointments()} 的批量释放路径
+     * {@code SlotMapper.releaseBookedBatch}(一次 UPDATE 完成),而不是
+     * {@code decrementBooked}——后者是 R-42 明确治理掉的写放大写法。
+     * 取消单条预约时传单元素列表即可,语义与批量清理完全一致。
+     *
+     * @throws IllegalArgumentException 预约不存在(GlobalExceptionHandler 映射为 404)
+     * @throws IllegalStateException    当前状态不允许取消(映射为 409)
+     */
+    @Transactional
+    public void cancelAppointment(Long appointmentId) {
+        Appointment appt = appointmentMapper.selectById(appointmentId);
+        if (appt == null) {
+            // 沿用既有约定:IllegalArgumentException → 全局异常处理器映射 404(见 GlobalExceptionHandler)
+            throw new IllegalArgumentException("预约不存在: " + appointmentId);
+        }
+        // 状态校验:仅 BOOKED 可自助取消,其余一律 409(理由见方法注释)
+        if (!"BOOKED".equals(appt.getStatus())) {
+            throw new IllegalStateException(cancelRejectReason(appt.getStatus()));
+        }
+
+        // 付费状态同步:建单时没有支付网关,有价套餐被直接标记为 PAID(见 book())。
+        // 若不处理,C 端「我的预约」会显示"已支付 + 已取消" —— 用户付了钱却没有可做的检查,
+        // 是本次新增页面上肉眼可见的不一致。
+        // 注意:**这里没有发生真实退款**。当前既无支付网关也无退款流水,REFUNDED 只是把状态
+        // 改成与"预约已取消"自洽的终态。将来接入真实支付时必须改为
+        // "调用退款网关成功后再置 REFUNDED",否则会出现"标记已退款但钱没退"。
+        if ("PAID".equals(appt.getPayStatus())) {
+            appt.setPayStatus("REFUNDED");
+        }
+        appt.setStatus("CANCELLED");
+        appointmentMapper.updateById(appt);
+
+        // 释放号源:单元素批量更新,与 cleanupExpiredAppointments 走同一条 SQL 路径(R-42)。
+        // slotId 为 null(历史无号源预约)时跳过,避免拼出空参数列表导致 SQL 语法错误。
+        if (appt.getSlotId() != null) {
+            List<Map<String, Object>> decrements = new ArrayList<>(1);
+            decrements.add(Map.of("slotId", appt.getSlotId(), "cnt", 1));
+            slotMapper.releaseBookedBatch(decrements);
+        }
+
+        // 发布取消事件 → dispatch 清理已生成的检查任务与看板投影(提交后消费,失败不影响本事务)
+        publisher.publishEvent(new AppointmentCancelledEvent(appt.getId(), appt.getPatientId()));
+    }
+
+    /** 不可取消状态的人话原因(直接透出给 C 端,避免只回一个干巴巴的状态码)。 */
+    private static String cancelRejectReason(String status) {
+        if ("CHECKED_IN".equals(status)) {
+            return "您已到院签到,不可自助取消,请联系前台办理";
+        }
+        if ("DONE".equals(status)) {
+            return "本次体检已完成,不可取消";
+        }
+        if ("CANCELLED".equals(status)) {
+            return "该预约已取消,请勿重复操作";
+        }
+        return "当前状态(" + status + ")不支持取消";
     }
 
     public List<Appointment> listByPatient(Long patientId) {

@@ -73,6 +73,24 @@ public class BookingController {
         return ResponseEntity.ok(toDetail(appt));
     }
 
+    @Operation(summary = "取消预约(仅限本人)")
+    @PreAuthorize("hasAuthority('patient:booking')")
+    @AuditLog(action = "CANCEL_APPOINTMENT")
+    @PostMapping("/api/patient/appointments/{id}/cancel")
+    public ResponseEntity<Void> cancel(@Parameter(description = "预约ID") @PathVariable Long id) {
+        Appointment appt = bookingService.getAppointment(id);
+        if (appt == null) return ResponseEntity.notFound().build();
+        Patient current = resolveCurrentPatient();
+        // IDOR 防护:归属校验必须先于 service 调用。
+        // 不能只依赖"患者只能看到自己的列表"这种间接约束——接口一旦被直接构造请求(改 id)就绕过了,
+        // 且取消是写操作,越权后果远大于读泄漏。
+        if (current == null || !Objects.equals(appt.getPatientId(), current.getId())) {
+            return ResponseEntity.status(403).build();
+        }
+        bookingService.cancelAppointment(id);
+        return ResponseEntity.ok().build();
+    }
+
     @Operation(summary = "查询当前患者预约列表")
     @GetMapping("/api/patient/appointments")
     public ResponseEntity<List<AppointmentDetail>> myAppointments() {

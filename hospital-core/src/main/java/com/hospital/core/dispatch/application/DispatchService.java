@@ -12,6 +12,7 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.hospital.core.booking.domain.AppointmentCancelledEvent;
 import com.hospital.core.booking.domain.AppointmentCreatedEvent;
 import com.hospital.core.booking.domain.AppointmentStatusEvent;
 import com.hospital.core.booking.domain.ExamItemBrief;
@@ -30,7 +31,8 @@ import lombok.extern.slf4j.Slf4j;
 
 /**
  * 排队分发引擎(应用服务)。
- * - 写侧:消费 booking 发布的 AppointmentCreatedEvent,为套餐内每个项目生成一条 ExamTask。
+ * - 写侧:消费 booking 发布的 AppointmentCreatedEvent,为套餐内每个项目生成一条 ExamTask;
+ *   并消费 AppointmentCancelledEvent,把该预约下尚未开始的任务撤出队列(取消即出队)。
  * - 读侧(CQRS):同步维护 dispatch.queue_board 物化投影,看板只查投影,不碰写模型。
  * - 生命周期:start / complete 推进任务状态并双向同步投影。
  */
@@ -77,6 +79,50 @@ public class DispatchService {
             board.setSeq(task.getSeq());
             board.setCreatedAt(task.getCreatedAt());
             boardMapper.insert(board);
+        }
+    }
+
+    /**
+     * 事件驱动入口:预约被患者自助取消后(booking 事务提交),清理该预约下尚未开始的排队任务。
+     *
+     * <p><b>为什么必须消费这个事件</b>:预约创建时本服务已为套餐内每个项目生成了 ExamTask 并写入
+     * queue_board 投影。若 booking 侧只把预约置 CANCELLED 而不联动,患者仍会挂在各科室队列里、
+     * 大屏看板照样显示他 —— 那是实打实的数据不一致。这里做对侧清理,做到"取消即出队"。
+     *
+     * <p><b>只清理 PENDING(尚未开始)</b>:{@code IN_PROGRESS} / {@code DONE} 说明人已经在检查
+     * 或已检查完,属于线下既成事实,删掉会让现场医生正在做的活和已出的结果凭空消失;
+     * {@code SKIPPED} 同理保留,供运营端「重新排队」复核。这类残留由前台线下作废流程处理。
+     *
+     * <p><b>幂等</b>:无 PENDING 任务时直接返回(重复消费 / 取消前任务就已推进完毕都是这条路),
+     * 不抛异常,保证事件重投不会让 booking 侧的事务回滚。
+     */
+    @TransactionalEventListener
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void onAppointmentCancelled(AppointmentCancelledEvent event) {
+        List<ExamTask> tasks = taskMapper.selectList(
+                new QueryWrapper<ExamTask>().eq("appointment_id", event.appointmentId()));
+        // 只挑尚未开始的任务;已开始的(检查中/已完成/已跳过)一律不动
+        List<ExamTask> pending = tasks.stream()
+                .filter(t -> "PENDING".equals(t.getStatus()))
+                .toList();
+        if (pending.isEmpty()) {
+            return;  // 幂等:无待检任务可清理,静默返回
+        }
+        List<Long> pendingIds = pending.stream().map(ExamTask::getId).toList();
+
+        // 1) 删除写模型。status 条件为二次护栏,确保任何情况下都不会误删已开始的任务。
+        taskMapper.delete(new QueryWrapper<ExamTask>()
+                .eq("status", "PENDING")
+                .in("id", pendingIds));
+
+        // 2) 同步清理看板投影:queue_board 与 exam_task 是 1:1(id 相同),按同一批 id 删除即可,
+        //    复用既有 boardMapper,不新造一套投影维护方式。
+        boardMapper.delete(new QueryWrapper<QueueBoard>().in("id", pendingIds));
+
+        // 3) SSE 广播(R-13: 必须挪到事务提交之后,慢客户端不得拖长数据库事务)。
+        //    按被删任务逐个广播,客户端据此把对应行从看板移除。
+        for (ExamTask t : pending) {
+            broadcastAfterCommit(new BoardUpdateEvent(t.getStation(), t.getId(), "cancel"));
         }
     }
 

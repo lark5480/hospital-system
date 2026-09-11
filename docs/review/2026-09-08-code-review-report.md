@@ -115,7 +115,9 @@
 - **R-56 的行为变化**：改 sessionStorage 后**新开标签页不再共享登录态**（单标签刷新仍免登）。这是收窄 XSS 窗口的代价，两全需 httpOnly Cookie + CSRF（P3）
 - **R-60 的运维项**：容器 / CI（ubuntu）无中文字体，PDF 中文会走降级（方框）。建议镜像挂载字体或设置 `PDF_FONT_PATH`
 - **本地零配置下的 SSE 鉴权取舍**：core 非 prod 未配置 `APP_JWT_SECRET` 时会生成**随机**密钥，notification-service 无法校验 ticket → 故 notification 非 prod 选择"放行 + WARN"而非 fail-closed（否则本地零配置联调必坏）。本地若要完整验证鉴权链路，请在两个服务的环境变量里注入同一把 `APP_JWT_SECRET`
-- **`BookingService` 的两处功能缺口**（非本次范围，属产品决策）：① `book()` 不校验患者档案存在性（`patientName` 可能为 null）；② 无患者主动取消 / 改期能力（状态机只有 `onAppointmentStatus` 与过期清理）
+- **`BookingService` 的功能缺口**（非审核条目，属产品决策）：① `book()` 不校验患者档案存在性 —— 实测**不可达**：`BookingController` 强制 `patientId == 当前登录患者 id`，患者能登录即说明档案存在；将来若开放"医护代预约"才需补；② **C 端自助取消已实现**（见下），**改期仍缺** —— 改期 = 取消 + 重新预约，患者取消后重约可达同等效果，暂不做。
+- **C 端取消预约（新增能力，非审核条目）**：`POST /api/patient/appointments/{id}/cancel`，限本人 + 仅 `BOOKED` 可取消（其余 409 且给中文原因）。三个副作用缺一不可：释放号源（`releaseBookedBatch`）、发布 `AppointmentCancelledEvent` 由 dispatch 清理未开始的 `ExamTask` 与看板投影、付费状态 `PAID` → `REFUNDED`。
+  - **残留待裁决**：① 取消**不处理真实退款**（当前无支付网关，建单即标记 `PAID`）；② 已 `CHECKED_IN` 想取消只能走前台，是否要"运营端强制取消"端点未定；③ `ExamTask` 状态机无 `CANCELLED`，取消走的是**物理删除** PENDING 任务，若要保留审计轨迹需改软删除。
 - **决策 1 结论**：不开放 `/visits/page`、`/reports/list`、`/reports/type` 给患者，也不新建 `/mine`。C 端能力一律走 `PatientController` 下自带归属校验的专用端点（`/api/patient/reports` 等），已可满足现有 `patient/*` 全部页面
 
 ### 新增运维依赖（部署清单必须同步）

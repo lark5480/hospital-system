@@ -33,6 +33,14 @@ export function bookAppointment(payload: BookingPayload) {
   return http.post<AppointmentDetail>('/patient/appointments', payload).then((r) => r.data)
 }
 
+/**
+ * 取消预约(仅限本人,后端做归属校验)。
+ * 成功后该号源会被释放(可被他人重新预约),同时 dispatch 侧已生成的排队任务会被撤出队列。
+ */
+export function cancelMyAppointment(id: number) {
+  return http.post<void>(`/patient/appointments/${id}/cancel`).then((r) => r.data)
+}
+
 export function getCurrentPatient() {
   return http.get<Patient>('/patient/me').then((r) => r.data)
 }

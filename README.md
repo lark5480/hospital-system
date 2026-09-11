@@ -61,6 +61,15 @@ browser ──► hospital-web :5173
 | `/audit-logs` | AuditLogView | platform |
 | `/login` `/404` | LoginView / NotFoundView | — |
 
+### C 端预约与自助取消
+
+- 预约:`POST /api/patient/appointments`,**仅限本人**(控制器按 JWT 解析患者档案后比对 `patientId`,不符 403)。
+- 取消:`POST /api/patient/appointments/{id}/cancel`,同样限本人,**仅 `BOOKED` 状态可取消** —— 已到院(`CHECKED_IN`)/ 已完成 / 已取消一律 409,并给出人话原因(已到院需联系前台)。
+- 取消的副作用(缺一不可):
+  1. **释放号源** —— 复用 `SlotMapper.releaseBookedBatch`,名额真正回到池子可被他人预约;
+  2. **联动清理分诊排队** —— 预约创建时 `AppointmentCreatedEvent` 已在 dispatch 侧展开成多条 `ExamTask` 与看板投影,取消会发布 `AppointmentCancelledEvent`,由 dispatch 删除**尚未开始**的任务(已 `IN_PROGRESS` / `DONE` 的不动,属线下既成事实)。只改预约状态而不清理,患者会继续留在检查队列里。
+- 付费状态:建单时无支付网关,有价套餐直接标记 `PAID`;取消时同步置 `REFUNDED`。**注意没有真实退款发生**,将来接入真实支付必须改为"退款成功才置 REFUNDED"。
+
 ## 认证与 RBAC(自管 JWT)
 
 ```
