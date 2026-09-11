@@ -120,6 +120,9 @@
 - **C 端取消预约（新增能力，非审核条目）**：`POST /api/patient/appointments/{id}/cancel`，限本人 + 仅 `BOOKED` 可取消（其余 409 且给中文原因）。三个副作用缺一不可：释放号源（`releaseBookedBatch`）、发布 `AppointmentCancelledEvent` 由 dispatch 清理未开始的 `ExamTask` 与看板投影、付费状态 `PAID` → `REFUNDED`。
   - **残留待裁决**：① 取消**不处理真实退款**（当前无支付网关，建单即标记 `PAID`）；② 已 `CHECKED_IN` 想取消只能走前台，是否要"运营端强制取消"端点未定；③ `ExamTask` 状态机无 `CANCELLED`，取消走的是**物理删除** PENDING 任务，若要保留审计轨迹需改软删除。
 - **同一份中间件凭证定义在三处，是文档漂移的结构性根因**：PostgreSQL / RabbitMQ / MinIO 的连接信息同时存在于 `docker-compose.yml` 的 `${VAR:-default}`、各服务 `application.yml` 的 `${VAR:default}`、以及 `.env.example` 三处。2026-09-11 在真实环境核对时发现 `.env.example` 的 **`PG_USER` / `PG_PASSWORD` / `RABBIT_USER` / `RABBIT_PASSWORD` 四个值与另两处不一致**（写成 `hospital/hospital` 与 `guest/guest`，实际应为 `postgres/root123` 与 `admin/admin123`）。"不设环境变量即可跑通"掩盖了这个问题，但照抄该文件覆盖环境变量会得到"容器用 A 口令创建、应用用 B 口令连接"的隐晦故障（报错是 `role "hospital" does not exist` / `ACCESS_REFUSED`，不易一眼看出是配置不一致）。已修正，并在文件顶部写明三处必须同步；**长期应把凭证抽为单一来源**，否则同类漂移会再次发生
+- **使用者在验证过程中发现的非审核缺陷（2026-09-11，已修复）**：
+  1. **创建检验申请恒 400**：`CreateRequisitionRequest.orderIds` 上的 `@NotEmpty` 与「为空时自动拾取该就诊下全部 LAB+CREATED 医嘱」的契约（DTO javadoc + `LabService` 实现 + 前端 TS 类型 `orderIds?: number[]` + 前端两处调用均不传）直接矛盾，请求在校验层即被拒，服务层的自动拾取逻辑永远走不到。**出处是历史提交 `630f51e`「参数校验」**，非本次改动。因前端只把非 409 错误吞成 warning toast，长期无人发现。已移除该注解并补 `CreateRequisitionRequestValidationTest` 钉住契约（断言 null / 空数组 / 非空三种形态均不得报错，同时确认 `visitId`/`doctorId` 未被顺带放宽）。顺带核查另两处 `@NotEmpty`（`VisitWithOrdersRequest.orders`、`SubmitResultsRequest.items`）后判定其与各自端点语义一致，保留。
+  2. **鉴权 E2E 用例耦合共享账号口令**：`AuthenticationFlowEndToEndTest` 硬编码用 `123456` 登录演示账号 `13800000001`，使用者按 R-10 改密后该用例以「登录 401」失败 —— 症状酷似鉴权回归。已改为 `@BeforeEach` 内归一化口令（`@Transactional` 会回滚，不污染使用者的真实口令），与 R-49 同类治理。
 - **决策 1 结论**：不开放 `/visits/page`、`/reports/list`、`/reports/type` 给患者，也不新建 `/mine`。C 端能力一律走 `PatientController` 下自带归属校验的专用端点（`/api/patient/reports` 等），已可满足现有 `patient/*` 全部页面
 
 ### 新增运维依赖（部署清单必须同步）

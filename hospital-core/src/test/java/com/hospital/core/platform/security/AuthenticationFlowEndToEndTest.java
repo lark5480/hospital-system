@@ -17,6 +17,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.transaction.annotation.Transactional;
@@ -69,10 +70,29 @@ class AuthenticationFlowEndToEndTest {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
+    @Autowired
+    private PasswordEncoder passwordEncoder;
+
     private final ObjectMapper objectMapper = new ObjectMapper();
 
+    /**
+     * 把用例依赖的共享种子账号口令<b>归一化到 {@link #DEFAULT_PASSWORD}</b>,并清理 Redis 吊销标记。
+     *
+     * <p>为什么必须做:这两个账号是演示环境的<b>共享</b>种子账号,使用者随时可能改掉口令
+     * (R-10 还会强制首次登录改密)。一旦被改,本用例就会以「登录 401」的形式失败 ——
+     * 症状看起来完全像鉴权回归,极难定位(本次真实踩到:账号 {@code 13800000001}
+     * 被使用者改成其它口令后,`login()` 直接断言失败)。
+     *
+     * <p>不会污染演示数据:本类标注 {@code @Transactional},这里的 UPDATE 随事务回滚,
+     * 用例结束后环境里仍是使用者设定的口令。这与 R-49(消除集成测试对种子数据的耦合)
+     * 是同一类治理 —— 用例必须自己保证前置状态。
+     */
     @BeforeEach
-    void clearRevocationMarksBefore() {
+    void normalizeSeedPasswordsAndClearRevocation() {
+        String encoded = passwordEncoder.encode(DEFAULT_PASSWORD);
+        for (String phone : List.of(TEST_PHONE, PATIENT_PHONE)) {
+            jdbcTemplate.update("update platform.sys_user set password = ? where phone = ?", encoded, phone);
+        }
         clearRevocationMarks();
     }
 
