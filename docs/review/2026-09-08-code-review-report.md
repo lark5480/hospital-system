@@ -5,7 +5,8 @@
 - **参与 Agent**：SECURITY（安全）、PERFORMANCE（性能）、TESTING（测试质量）
 - **流程**：第 1 轮三方独立审查 → 第 2 轮交叉质询（反驳 / 降级 / 升级 / 补充 / 自我修正 / 预判辩护）→ 第 3 轮主席收敛
 - **产出**：61 条问题（6 Critical / 22 High / 26 Medium / 7 Low），含 8 条质询后新增、9 条质询后改级
-- **实施状态（2026-09-10 更新）**：P0 + P1 + P2 已全部落盘；复核中发现的 2 条审核漏项（R-62 Critical / R-63 High）已修复；原先 5 条「部分修复」（R-11 / R-21 / R-33 / R-34 / R-47）亦已收尾 —— 合计 63 条：**62 项已修复、1 项已缓解、0 项部分修复**。详见下方「实施状态总览」
+- **实施状态（2026-09-11 更新）**：P0 + P1 + P2 已全部落盘；复核中发现的 2 条审核漏项（R-62 Critical / R-63 High）已修复；原先 5 条「部分修复」（R-11 / R-21 / R-33 / R-34 / R-47）亦已收尾 —— 合计 63 条：**62 项已修复、1 项已缓解、0 项部分修复**。
+- **验证覆盖**：后端 289 用例 + 前端 19 用例全绿，前端 `type-check` 与构建通过；**浏览器端到端链路（体检预约 → 分诊排队 → 自助取消 → 看板联动）已于 2026-09-11 在本地真实环境执行**。唯一未做压测验证的是 R-29（靠根因治理间接缓解，见「遗留」）。详见下方「实施状态总览」
 - **定级标准**：
   - **Critical**：可直接导致批量敏感数据泄露 / 权限完全失守，或线上必然不可用
   - **High**：需要低门槛前置条件即可造成实质损害，或数据量到 10 万级必然劣化到不可用
@@ -118,6 +119,7 @@
 - **`BookingService` 的功能缺口**（非审核条目，属产品决策）：① `book()` 不校验患者档案存在性 —— 实测**不可达**：`BookingController` 强制 `patientId == 当前登录患者 id`，患者能登录即说明档案存在；将来若开放"医护代预约"才需补；② **C 端自助取消已实现**（见下），**改期仍缺** —— 改期 = 取消 + 重新预约，患者取消后重约可达同等效果，暂不做。
 - **C 端取消预约（新增能力，非审核条目）**：`POST /api/patient/appointments/{id}/cancel`，限本人 + 仅 `BOOKED` 可取消（其余 409 且给中文原因）。三个副作用缺一不可：释放号源（`releaseBookedBatch`）、发布 `AppointmentCancelledEvent` 由 dispatch 清理未开始的 `ExamTask` 与看板投影、付费状态 `PAID` → `REFUNDED`。
   - **残留待裁决**：① 取消**不处理真实退款**（当前无支付网关，建单即标记 `PAID`）；② 已 `CHECKED_IN` 想取消只能走前台，是否要"运营端强制取消"端点未定；③ `ExamTask` 状态机无 `CANCELLED`，取消走的是**物理删除** PENDING 任务，若要保留审计轨迹需改软删除。
+- **同一份中间件凭证定义在三处，是文档漂移的结构性根因**：PostgreSQL / RabbitMQ / MinIO 的连接信息同时存在于 `docker-compose.yml` 的 `${VAR:-default}`、各服务 `application.yml` 的 `${VAR:default}`、以及 `.env.example` 三处。2026-09-11 在真实环境核对时发现 `.env.example` 的 **`PG_USER` / `PG_PASSWORD` / `RABBIT_USER` / `RABBIT_PASSWORD` 四个值与另两处不一致**（写成 `hospital/hospital` 与 `guest/guest`，实际应为 `postgres/root123` 与 `admin/admin123`）。"不设环境变量即可跑通"掩盖了这个问题，但照抄该文件覆盖环境变量会得到"容器用 A 口令创建、应用用 B 口令连接"的隐晦故障（报错是 `role "hospital" does not exist` / `ACCESS_REFUSED`，不易一眼看出是配置不一致）。已修正，并在文件顶部写明三处必须同步；**长期应把凭证抽为单一来源**，否则同类漂移会再次发生
 - **决策 1 结论**：不开放 `/visits/page`、`/reports/list`、`/reports/type` 给患者，也不新建 `/mine`。C 端能力一律走 `PatientController` 下自带归属校验的专用端点（`/api/patient/reports` 等），已可满足现有 `patient/*` 全部页面
 
 ### 新增运维依赖（部署清单必须同步）
