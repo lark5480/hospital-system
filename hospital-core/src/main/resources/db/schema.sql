@@ -356,20 +356,9 @@ CREATE INDEX IF NOT EXISTS idx_board_created_at    ON dispatch.queue_board(creat
 -- R-37: 看板不传 station 时按状态白名单过滤(剔除 DONE),需要以 status 打头的索引才能避免全表扫描。
 -- 注意与 idx_board_station 的区别:那把索引前导列是 station,只覆盖"指定工位"的查询路径。
 CREATE INDEX IF NOT EXISTS idx_board_status_seq    ON dispatch.queue_board(status, seq);
-CREATE INDEX IF NOT EXISTS idx_report_visit        ON report.record(visit_id);
-CREATE INDEX IF NOT EXISTS idx_report_patient      ON report.record(patient_id);
-CREATE INDEX IF NOT EXISTS idx_report_type_status  ON report.record(type, status);
-CREATE INDEX IF NOT EXISTS idx_report_appointment  ON report.record(appointment_id);
-CREATE INDEX IF NOT EXISTS idx_rx_visit            ON pharmacy.prescription(visit_id);
-CREATE INDEX IF NOT EXISTS idx_rx_patient          ON pharmacy.prescription(patient_id);
-CREATE INDEX IF NOT EXISTS idx_rx_status           ON pharmacy.prescription(status);
-CREATE INDEX IF NOT EXISTS idx_rx_item_rx          ON pharmacy.prescription_item(prescription_id);
-CREATE INDEX IF NOT EXISTS idx_rx_item_order       ON pharmacy.prescription_item(order_id);
-CREATE INDEX IF NOT EXISTS idx_lab_req_visit       ON lab.requisition(visit_id);
-CREATE INDEX IF NOT EXISTS idx_lab_req_patient     ON lab.requisition(patient_id);
-CREATE INDEX IF NOT EXISTS idx_lab_req_status      ON lab.requisition(status);
-CREATE INDEX IF NOT EXISTS idx_lab_item_req        ON lab.result_item(requisition_id);
-CREATE INDEX IF NOT EXISTS idx_lab_item_order      ON lab.result_item(order_id);
+-- 注:report/pharmacy/lab 三域的索引原先也放在本集中段,但这三个域的 schema/建表都在本段之后,
+-- 全新库上 spring.sql.init 顺序执行会因 "schema does not exist" 失败(仅 CI service container 复现,
+-- 本地有 initdb 预建的库不受影响)。已统一移至文件末尾,见「跨域后置索引」小节。
 CREATE INDEX IF NOT EXISTS idx_audit_created       ON platform.audit_log(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_actor         ON platform.audit_log(actor);
 CREATE INDEX IF NOT EXISTS idx_audit_action        ON platform.audit_log(action);
@@ -1135,3 +1124,24 @@ COMMENT ON COLUMN clinical.medical_record.finalized_at IS '终诊时间';
 CREATE INDEX IF NOT EXISTS idx_mr_visit_id ON clinical.medical_record(visit_id);
 CREATE INDEX IF NOT EXISTS idx_mr_patient_id ON clinical.medical_record(patient_id);
 CREATE INDEX IF NOT EXISTS idx_mr_diagnosis ON clinical.medical_record USING GIN (diagnosis);
+
+-- ===================== 跨域后置索引 =====================
+-- report/pharmacy/lab 三域的索引必须晚于各自的 CREATE SCHEMA / CREATE TABLE 执行。
+-- 原先它们被放在文件中部的集中索引段,而这三域的建表都在该段之后,导致全新库上
+-- spring.sql.init 顺序执行时 report.record 尚不存在而报 "schema \"report\" does not exist",
+-- 整个 @SpringBootTest 上下文启动失败(CI 裸 postgres 无 initdb 预建才暴露,本地重跑不报错)。
+-- 统一挪至文件末尾:此处全部 schema/表(含 report.record 的 patient_id/appointment_id 等 ALTER 列)均已存在。
+CREATE INDEX IF NOT EXISTS idx_report_visit        ON report.record(visit_id);
+CREATE INDEX IF NOT EXISTS idx_report_patient      ON report.record(patient_id);
+CREATE INDEX IF NOT EXISTS idx_report_type_status  ON report.record(type, status);
+CREATE INDEX IF NOT EXISTS idx_report_appointment  ON report.record(appointment_id);
+CREATE INDEX IF NOT EXISTS idx_rx_visit            ON pharmacy.prescription(visit_id);
+CREATE INDEX IF NOT EXISTS idx_rx_patient          ON pharmacy.prescription(patient_id);
+CREATE INDEX IF NOT EXISTS idx_rx_status           ON pharmacy.prescription(status);
+CREATE INDEX IF NOT EXISTS idx_rx_item_rx          ON pharmacy.prescription_item(prescription_id);
+CREATE INDEX IF NOT EXISTS idx_rx_item_order       ON pharmacy.prescription_item(order_id);
+CREATE INDEX IF NOT EXISTS idx_lab_req_visit       ON lab.requisition(visit_id);
+CREATE INDEX IF NOT EXISTS idx_lab_req_patient     ON lab.requisition(patient_id);
+CREATE INDEX IF NOT EXISTS idx_lab_req_status      ON lab.requisition(status);
+CREATE INDEX IF NOT EXISTS idx_lab_item_req        ON lab.result_item(requisition_id);
+CREATE INDEX IF NOT EXISTS idx_lab_item_order      ON lab.result_item(order_id);
