@@ -1,11 +1,24 @@
 # 医院信息系统 · hospital-system
 
 > 个人学习 / 求职作品向项目。用 AI 辅助实践医院业务知识,循序渐进本地运行(不上公网/不付费服务器),DB 用 Oracle 转向 PostgreSQL。
+
+## 文档地图(该看哪份)
+
+| 我想… | 看这里 |
+|---|---|
+| 跑起来 / 了解能力总览 / 测试账号 | 本 README |
+| 改代码前,知道要守哪些铁律与坑 | [`AGENTS.md`](AGENTS.md)(编码代理协作约定) |
+| 端到端业务流程 + 各角色权限矩阵 | [`docs/business-flow.md`](docs/business-flow.md)(流程唯一权威源) |
+| 架构全景推导 | [`docs/architecture-design.md`](docs/architecture-design.md) |
+| 某个决策「为什么这么选」 | [`docs/adr/`](docs/adr/README.md) |
+| 面试 / 复盘向的知识点问答 | [`docs/notes/interview-qa.md`](docs/notes/interview-qa.md)(非权威规范,辅助理解) |
+
+> 原则:**一个知识点只在一处维护,其余用指针**。命令 / 测试账号 / RBAC 以本 README 为准,铁律与坑以 AGENTS.md 为准,业务流程以 business-flow.md 为准。
 > 结构详见 [`docs/architecture-design.md`](docs/architecture-design.md)，架构决策记录详见 [`docs/adr/`](docs/adr/README.md)。
 
 ## 技术栈
 
-**后端**
+**后端 / 前端 / 中间件**技术栈如下,**具体版本号以 `pom.xml` 与 `hospital-web/package.json` 为准**(避免文档与依赖漂移):
 - Java 21 + Spring Boot 3.2
 - MyBatis-Plus + **PostgreSQL 16**
 - RabbitMQ(事件桥接,默认启用)、MinIO(对象存储)
@@ -39,27 +52,13 @@ browser ──► hospital-web :5173
 - **notification**:消费 `VisitCreatedEvent` / `OrderCreatedEvent` / `VisitStatusEvent`,写入 notification store,供前端轮询。
 - **file**:MinIO 封装,上传下载 + 分片。
 
-## 前端路由(29 条)
+## 前端路由
 
-| 路由 | 视图 | 后端模块 |
-|---|---|---|
-| `/dashboard` | DashboardView | — |
-| `/visits` `/visits/:id` | VisitListView / VisitDetailView | clinical |
-| `/registration` `/registration/screen` | RegistrationView / OutpatientScreenView | clinical |
-| `/notifications` | NotificationView | notification |
-| `/files` | FileView | file |
-| `/patient/registration` `/patient/booking` `/patient/appointments` `/patient/my-queue` `/patient/my-reports` | 对应 5 个 View | clinical / booking / booking / dispatch / report |
-| `/patients` | PatientsView | patient |
-| `/dispatch` `/dispatch/screen` | DispatchView / ScreenView | dispatch |
-| `/pharmacy/prescriptions` `/pharmacy/prescriptions/:id` | 对应 2 个 View | pharmacy |
-| `/lab/requisitions` `/lab/requisitions/:id` | 对应 2 个 View | lab |
-| `/exams` | ExamTasksView | booking |
-| `/reports` | ReportsView | report |
-| `/org/departments` `/org/staff` `/org/roles` | DepartmentsView / StaffView / RoleAuthView | org / org / iam |
-| `/menu-manage` | MenuManageView | iam |
-| `/cashier` | CashierView | clinical |
-| `/audit-logs` | AuditLogView | platform |
-| `/login` `/404` | LoginView / NotFoundView | — |
+路由 = 视图 = 后端模块的完整映射**以代码为准**:[`hospital-web/src/router/index.ts`](hospital-web/src/router/index.ts)(勿在此手抄清单,加/改页面只改代码)。概览:
+
+- **B 端工作台**:就诊 / 挂号分诊 / 药事 / 检验 / 体检调度 / 报告 / 收费 / 组织与权限(角色·菜单) / 审计 / 文件 / 通知。
+- **C 端患者门户**:`/patient/*`(挂号 / 预约 / 我的预约 / 我的排队 / 我的报告),与 B 端同仓库,可见性由后端菜单裁剪控制。
+- 未登录由路由守卫跳 `/login`;菜单不硬编码,由后端 `MenuService` 按当前用户 authorities 动态裁剪。
 
 ### C 端预约与自助取消
 
@@ -172,20 +171,29 @@ CI 中 `mvn verify` 触发 `ArchitectureTest`:
 
 ```
 hospital-system/
+├── README.md                    # 项目入口(本文)
+├── AGENTS.md                    # 编码代理协作铁律
+├── CLAUDE.md                    # 路由 → AGENTS.md
 ├── pom.xml                      # Maven reactor 描述
 ├── docker-compose.yml           # 中间件编排
-├── .env.example               # 环境变量模板
+├── .env.example                 # 环境变量模板
 ├── .github/workflows/ci.yml     # GitHub Actions CI
-├── docs/architecture-design.md  # 架构设计（精简版）
-├── docs/adr/                    # 架构决策记录（独立管理）
+├── docs/
+│   ├── architecture-design.md   # 架构设计(精简版)
+│   ├── business-flow.md         # 业务流程 + 角色权限矩阵(权威源)
+│   ├── adr/                     # 架构决策记录(编号规范)
+│   ├── review/                  # 代码审查结论与实施状态
+│   └── notes/interview-qa.md    # 面试/复盘向知识问答
 ├── hospital-core/               # 模块化单体核心
 ├── hospital-notification-service/ # 通知服务(RabbitMQ 消费者)
 ├── hospital-file-service/       # 文件服务(MinIO 封装)
-├── hospital-gateway/           # API Gateway
+├── hospital-gateway/            # API Gateway
 └── hospital-web/                # Vue3 前端
 ```
 
 ## 业务闭环
+
+> 端到端能力概览如下;**完整的流程步骤、状态流转与角色权限矩阵以 [`docs/business-flow.md`](docs/business-flow.md) 为权威源**,本节只讲"能做什么",不重复流程细节。
 
 #### 就诊 / 医嘱 / 收费(同一事务)
 前端"就诊详情"页可:

@@ -1,8 +1,9 @@
 # AGENTS.md — hospital-system 开发约定
 
 > 本文件为 Claude Code / Codex 等编码代理在本仓库协作时的**唯一入口文档**(`CLAUDE.md` 通过 `@AGENTS.md` 指向本文件)。
-> 只保留「写错代价高、不翻代码发现不了」的铁律;业务闭环、演示账号表、技术选型见根目录 `README.md`,
-> 架构推导与决策记录见 `docs/architecture-design.md`、`docs/adr/`;代码审查结论与实施状态见 `docs/review/`。
+> 只保留「写错代价高、不翻代码发现不了」的铁律与坑;命令 / 测试账号 / 技术选型 / RBAC / 能力概览见根目录 `README.md`,
+> 完整业务流程与权限矩阵见 `docs/business-flow.md`,架构推导与决策记录见 `docs/architecture-design.md`、`docs/adr/`;
+> 代码审查结论与实施状态见 `docs/review/`,面试 / 复盘向问答见 `docs/notes/interview-qa.md`。同一知识点不在本文件重抄,能用指针就用指针。
 > 需要改某个业务流程时,先读对应小节与源码再动手。
 
 ## 项目一句话
@@ -59,36 +60,22 @@ npm test                             # vitest(jsdom + @vue/test-utils)
 - **唯一建表 / 种子脚本**:`hospital-core/src/main/resources/db/schema.sql`。
   docker-compose 将其挂为 postgres 容器 initdb(仅全新 `pg-data` 卷时执行)。改表就改它,勿另建 SQL 文件。
 - 实体必须 `@TableName("schema.table")`(MyBatis-Plus,`map-underscore-to-camel-case: true`)。
-- 全部表在 `hospital` 库内按 schema 隔离:
-
-| Schema | 关键表 |
-|---|---|
-| `platform` | `sys_user`、`sys_user_role`、`role`、`role_authority`、`menu`、`menu_authority`、`audit_log` |
-| `clinical` | `visit`、`visit_read_model`(CQRS)、`orders`、`charge`、`registration`、`medical_record`(JSONB) |
-| `patient` | `patient`(含 `user_id` 关联统一账号) |
-| `booking` | `exam_package`、`exam_item`、`slot`、`appointment` |
-| `dispatch` | `exam_task`、`queue_board` |
-| `pharmacy` | `prescription`、`prescription_item` |
-| `lab` | `requisition`、`result_item` |
-| `report` | `record` |
-| `org` | `department`、`staff`(含 `user_id` 关联统一账号) |
-
+- 全部表在 `hospital` 库内按 schema 隔离(`platform` / `clinical` / `patient` / `booking` / `dispatch` / `pharmacy` / `lab` / `report` / `org`)。
+  **各 schema 下的具体表清单以 `schema.sql` 为准,勿在此手抄** —— 加/改表只改脚本,这里只维护"一域一 schema"的稳定事实。
 - 幂等种子用 `INSERT … SELECT … WHERE NOT EXISTS`;需要每次启动重算的逻辑放 `DataInitializer`。
 
 ## 登录与账号(现状,勿再引入 dev 自动登录)
 
-- **统一真登录**:手机号 + 密码,自管 JWT(HS256),**无 dev 模拟登录开关**;未登录由路由守卫跳 `/login`。
-- 登录接口:`POST /api/auth/login`,**JSON 请求体** `{phone, password}` → token + roles + authorities(七权并集)。
-  刻意**不走 URL query**(密码进 URL 会被 access log / 浏览器历史 / Referer / 网关注日志记录);别为"方便"改回去。
+- **统一真登录**:手机号 + 密码,自管 JWT(HS256),**无 dev 模拟登录开关**;未登录由路由守卫跳 `/login`。登录接口 / 七权清单 / RBAC 模型细节见 `README.md`「认证与 RBAC」,此处不重抄。
+- **登录为何走 JSON body 而非 URL query**:`POST /api/auth/login` 刻意不把 `{phone,password}` 放 URL query
+  (密码进 URL 会被 access log / 浏览器历史 / Referer / 网关注日志记录);别为"方便"改回去。
 - **演示账号不直接种在 `sys_user`**:`DataInitializer` 启动时把 `org.staff`(角色 = `staff.position`)与
   `patient.patient`(→ PATIENT)按 phone 幂等迁移进 `platform.sys_user`,默认密码统一 `123456`(BCrypt)。
   要增 / 改演示账号,改上述两张表的种子,不要手插 sys_user。演示账号表见 `README.md`。
-- 七权 RBAC:`visit:entry` / `visit:audit` / `order:execute` / `pharmacy:dispense` / `charge:pay` / `system:admin` / `patient:booking`。
-- 后端鉴权:`@PreAuthorize("hasAuthority('...')")`;前端菜单 = 后端 `MenuService` 按当前用户 authorities
-  从 `platform.menu` + `platform.menu_authority` **动态裁剪(不是代码硬编码)**。
-- **SSE 鉴权**:`EventSource` 无法带自定义头,故先 `POST /api/core/sse/ticket`(Bearer)换 **60 秒、`scope=sse`** 的 ticket,
-  再以 `?ticket=` 订阅 `/api/core/**/sse/**`;`JwtAuthFilter` 显式**拒绝**把 ticket 当普通令牌用(否则 URL 上的凭证就能换全量 API 访问)。
-  前端 SSE 客户端需**自行退避重连** —— 原生自动重连会复用已过期 ticket,必然失败。
+- **后端鉴权与菜单**:`@PreAuthorize("hasAuthority('...')")`;菜单由后端 `MenuService` 从 `platform.menu` + `platform.menu_authority`
+  **动态裁剪(不是代码硬编码)** —— 新增页面要同步种菜单表,别只改前端路由。
+- **SSE 鉴权两个坑**(机制见 README,此处只记反直觉点):① `JwtAuthFilter` 显式**拒**把 `scope=sse` 的 ticket 当普通令牌用(否则 URL 上的凭证就能换全量 API 访问);
+  ② 前端 SSE 客户端需**自行退避重连** —— 原生自动重连会复用已过期的 ticket,必然失败。
 - **SSE 超时后的 ASYNC 派发必须放行**(R-65,core 与 notification 的 `SecurityConfig` 均如此):SSE 连接 60s 到点后
   容器会以 `DispatcherType.ASYNC` 把请求重进过滤器链,那次派发**没有身份上下文**(自定义过滤器是
   `OncePerRequestFilter`,默认跳过 ASYNC),AuthorizationFilter 会把它当匿名 → 响应已提交 → 日志刷
@@ -109,19 +96,16 @@ npm test                             # vitest(jsdom + @vue/test-utils)
 - 状态按业务域拆 Pinia store;`api/http.ts` 统一 Bearer 拦截;登录态持久化在 **sessionStorage** —— 刷新免登,但**新开标签页不共享登录态**
   (这是刻意收窄 XSS 窗口的取舍,别再改回 localStorage)。storage 访问前必须探测可用性(禁用 Storage 时直接读会在模块加载阶段抛错 → 整站白屏)。
 
-## 业务速查(细节点开对应源码 / README「业务闭环」)
+## 业务不变式与坑(完整流程 / 状态流转 / 权限矩阵见 `docs/business-flow.md`,能力概览见 README「业务闭环」;本节只记改代码时易踩的反直觉点)
 
-- **就诊状态机**:叫号生成就诊单 `CREATED` → 医生点「确单」锁定医嘱并生成处方 / 检验申请 `CONFIRMED` →
-  收费 `IN_PROGRESS` → 医嘱全部执行 / 取消后 `FINISHED`。`CREATED` 不可结算;已确单后仍可追加医嘱,新医嘱自动并入既有单据。
-- **下游单据不变式**:「就诊已确单 ⇒ 每条 LAB / MEDICATION 医嘱都被对应单据明细覆盖」。生成由**服务端**完成 —— 确单时批量发一次事件、
-  已确单后追加医嘱时单条发一次,**前端不再发第二个请求**(历史上正是那一步没有补偿,导致单据静默缺失、连审计都不留痕)。
-  `DownstreamDocReconcileJob` 每 10 分钟把漏生成的补上(补建记录的 actor 为 `system`,与人工操作可区分)。
-  这是本仓**唯一刻意采用最终一致**的链路(确单是临床主流程,不能被下游拖垮),与「就诊 / 医嘱 / 收费同事务强一致」的取舍互不冲突。
-- **文件访问**:统一经 core 的 `/api/core/files` 代理(upload / list / download),归属判定放在 core —— 只有那里有身份上下文。
-  file-service(`:8103`)只在内网可达;**网关不得加回 `/api/files` 路由**(网关层没有身份上下文,直连等于匿名可枚举 / 下载全部患者报告;
-  `GatewayRouteGuardTest` 有反向断言守着)。
-- **挂号叫号**:取 WAITING 最小排队号 → 自动建就诊单并置 CALLED(关联 visitId);科室分诊屏 + SSE 推送。
-- **体检预约**:`book()` 在 DB 行锁下原子占号(`booked < capacity`),成功后落 `exam_task` + `queue_board`;号源由 `SlotGenerateJob` 每日生成。
+- **就诊状态机**:`CREATED → CONFIRMED → IN_PROGRESS → FINISHED`。`CREATED` 不可结算;已确单后仍可追加医嘱,新医嘱自动并入既有单据。
+  所有状态变更必须走 `Visit.transitTo()`,非法转换抛异常(细则见 `VisitStatusTest` / ArchUnit 状态机旁路守护规)。
+- **下游单据不变式**(本仓**唯一刻意最终一致**的链路):「就诊已确单 ⇒ 每条 LAB / MEDICATION 医嘱都被对应单据明细覆盖」。生成由**服务端**完成 ——
+  确单时批量发一次事件、已确单后追加医嘱时单条发一次,**前端不再发第二个请求**(历史上正是那一步没有补偿,导致单据静默缺失、连审计都不留痕)。
+  `DownstreamDocReconcileJob` 每 10 分钟补漏生成的(补建记录 actor 为 `system`,与人工可区分)。与「就诊/医嘱/收费同事务强一致」的取舍互不冲突。
+- **文件访问 / 网关路由铁律**:文件统一经 core 的 `/api/core/files` 代理(归属判定只在 core —— 只有那里有身份上下文),file-service(`:8103`)只内网可达。
+  **网关不得加回 `/api/files` 路由**(网关无身份上下文,直连 = 匿名可枚举 / 下载全部患者报告;`GatewayRouteGuardTest` 有反向断言守着)。
+- **体检预约原子占号**:`book()` 在 DB 行锁下保证 `booked < capacity`(不靠应用层先查后改);号源由 `SlotGenerateJob` 每日生成。挂号叫号等流程细节见 `business-flow.md`。
 - **P2 特性(已落地)**:CQRS-lite 读模型 `visit_read_model`;FHIR Facade(只读、手写 JSON);结构化病历 `medical_record`(JSONB + `JsonbTypeHandler`)。
 
 ## 工程质量
