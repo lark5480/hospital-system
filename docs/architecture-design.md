@@ -51,10 +51,14 @@
 
 ## 四、容器架构(见配图)
 
-**hospital-core**(模块化单体核心,端口 8101)+ **hospital-gateway**(API 网关,8104)+ **hospital-notification-service**(通知服务,8102)+ **hospital-file-service**(文件服务,8103),共 4 个 Spring Boot 进程。hospital-core 内部 10 个 domain 模块:**临床 / 药事 / 医技(检验) / 报告 / 体检预约 / 排队分发 / 患者 / IAM(菜单) / 组织架构 / FHIR 接口 / 平台基础(JWT+RBAC+审计)**。
+**hospital-core**(模块化单体核心,端口 8101)+ **hospital-gateway**(API 网关,8104)+ **hospital-notification-service**(通知服务,8102)+ **hospital-file-service**(文件服务,8103),共 4 个 Spring Boot 进程。
+hospital-core 内是 `com.hospital.core.<域>` 下的 **11 个包 = `platform`(共享内核) + 10 个业务域**:
+**临床 clinical / 药事 pharmacy / 医技检验 lab / 报告 report / 体检预约 booking / 排队分发 dispatch / 患者 patient / 菜单 iam / 组织架构 org / FHIR 接口 fhir** + **平台基础 platform(JWT+RBAC+审计)**。
+> 注:`ArchUnit` 规则里还预留了 `operation` / `integration` 两个**尚未创建**的包名(前瞻护栏),别据此以为存在这两个模块。
 配套中间件(均已在 `docker-compose.yml` 中配置,`docker compose up` 全量启动):**PostgreSQL 16**、**Redis 7**、**MinIO**(对象存储)、**RabbitMQ 3**(可靠事件)。调度使用 Spring 内置 `@Scheduled`。
 > 认证为后端自管 JWT(JwtTokenService + JwtAuthFilter),无外部 IdP 依赖。
-对外:经集成模块对接 **医保网关、区域全民健康平台、第三方 LIS/PACS**(P2 阶段)。
+**规划中(尚未实现)**:对接 **医保网关、区域全民健康平台、第三方 LIS/PACS** 的集成模块 —— 属 P2/互联互通方向的设计目标,
+当前代码里只有只读 FHIR Facade(见第十一节 P2),**不存在名为 `integration` 的模块**。
 
 ---
 
@@ -78,21 +82,16 @@
 
 ### Schema-per-module 隔离
 
-所有表共享一个 PostgreSQL 16 实例(`hospital` db),按 schema 逻辑隔离:
+所有表共享一个 PostgreSQL 16 实例(`hospital` db),按 schema 逻辑隔离。**一域一 schema** 是稳定事实:
 
-| Schema | 表 | 所属模块 |
-|---|---|---|
-| `platform` | `audit_log` / `sys_user` / `sys_user_role` / `role` / `role_authority` / `menu` / `menu_authority` | 共享内核 |
-| `clinical` | `visit` / `orders` / `charge` / `registration` / `visit_read_model` / `medical_record` | 临床就诊 |
-| `patient` | `patient` | 患者注册 |
-| `booking` | `exam_package` / `exam_item` / `slot` / `appointment` | 体检预约 |
-| `dispatch` | `exam_task` / `queue_board` | 排队分发 |
-| `pharmacy` | `prescription` / `prescription_item` | 药事 |
-| `lab` | `requisition` / `result_item` | 检验 |
-| `report` | `record` | 报告 |
-| `org` | `department` / `staff` | 组织架构 |
+`platform`(共享内核) · `clinical`(临床就诊) · `patient`(患者注册) · `booking`(体检预约) · `dispatch`(排队分发) ·
+`pharmacy`(药事) · `lab`(检验) · `report`(报告) · `org`(组织架构)
 
-ORM: MyBatis-Plus 3.5.7,`@TableName("schema.table")`,开启 `map-underscore-to-camel-case`。
+> **各 schema 下的具体表清单不在此维护** —— 它随功能变动,手抄必然滞后(这份清单此前就漏过 `platform.meta`)。
+> 唯一权威源是 [`hospital-core/src/main/resources/db/schema.sql`](../hospital-core/src/main/resources/db/schema.sql),
+> 就地查看:`grep -o 'CREATE TABLE IF NOT EXISTS [a-z_]*\.[a-z_]*' schema.sql`
+
+ORM: MyBatis-Plus(版本以 `pom.xml` 为准),`@TableName("schema.table")`,开启 `map-underscore-to-camel-case`。
 
 
 ---
@@ -112,28 +111,28 @@ ORM: MyBatis-Plus 3.5.7,`@TableName("schema.table")`,开启 `map-underscore-to-c
 |---|---|---|
 | 后端 | Java 21 + Spring Boot 3 | 模块边界由 ArchUnit 强制,域内事件走标准 `ApplicationEventPublisher` |
 | ORM | MyBatis-Plus | 团队已精通 |
-| DB | PostgreSQL 16(或 MySQL 8) | 见 ADR-002;docker-deploy 已用 PG16 |
+| DB | PostgreSQL 16(或 MySQL 8) | 见 ADR-002;compose 已用 PG16 |
 | 前端 | Vue 3 + TS + Element Plus + Vite | 临床/管理工作站;经 Vite dev proxy 转发 |
 | IAM | 自管 JWT(JwtTokenService + JwtAuthFilter) | 七权分立 RBAC(visit:entry/visit:audit/order:execute/pharmacy:dispense/charge:pay/system:admin/patient:booking),角色/权限入库可调,无外部 IdP 依赖 |
 | 缓存 | Redis 7 | 套餐列表查询已接入 Spring Cache(@Cacheable);候选:号源/排队号 |
 | 对象存储 | MinIO | 影像/附件;本地已装 |
 | 消息 | RabbitMQ(单体阶段唯一 broker) | 可靠事件外置;勿与 RocketMQ 双跑 |
 | 调度 | Spring @Scheduled | SlotGenerateJob(每天 3:00 号源生成) + AppointmentCleanupJob(每天 4:00 过期清理),零外部依赖 |
-| 部署 | Docker Compose(复用 docker-deploy 模式) → k3s | 拒绝重 k8s;dev/prod 覆盖 + 健康检查 + 非 root |
+| 部署 | Docker Compose(复用 compose 编排) → k3s | 拒绝重 k8s;dev/prod 覆盖 + 健康检查 + 非 root |
 | 可观测 | Prometheus + Grafana + Loki + OTel | 日志→Loki;指标→Prometheus;追踪→OTel;**审计日志→PostgreSQL(等防篡改)**;不引 MongoDB |
 | CI/CD | GitHub Actions | 个人仓库;build + test + ArchUnit |
 
 ---
 
-## 八-B、本地中间件取舍(对齐 `E:\Software\docker-dev` 与 docker-deploy)
+## 八-B、本地中间件取舍
 
-你本地 `docker-dev` 已装一批中间件。按「模块化单体、拒绝微服务期中间件」原则,取舍如下:
+> 决策原则是「模块化单体、拒绝微服务期中间件」,下表针对**开发者本机已装的中间件**逐个取舍(本机目录不写进文档,以 `docker-compose.yml` 为唯一编排入口)。
 
 | 本地组件 | 决策 | 理由 |
 |---|---|---|
-| PostgreSQL 16 | ✅ 用 | 与 docker-deploy 一致,系统记录源 |
+| PostgreSQL 16 | ✅ 用 | 与 `docker-compose.yml` 一致,系统记录源 |
 | MySQL 8 | ⚠️ 备选 | 团队更熟可用,但选其一即可,勿双库 |
-| Redis 7 | ✅ 用 | 套餐列表已接入 Spring Cache(@Cacheable);与 docker-deploy 一致 |
+| Redis 7 | ✅ 用 | 套餐列表已接入 Spring Cache(@Cacheable);与 `docker-compose.yml` 一致 |
 | MinIO | ✅ 用 | 影像/附件对象存储 |
 | RabbitMQ | ✅ 用(唯一 broker) | 可靠事件;与 RocketMQ 二选一,勿双跑 |
 | RocketMQ | ⚠️ 暂缓 | 与 RabbitMQ 同质,单体阶段不必双 broker;若团队偏阿里系可择一 |
@@ -158,7 +157,7 @@ ORM: MyBatis-Plus 3.5.7,`@TableName("schema.table")`,开启 `map-underscore-to-c
 
 ## 十、架构决策记录
 
-详见 [ADR 目录](adr/README.md)，包含所有架构决策的完整记录（ADR-001 ~ ADR-025）。
+详见 [ADR 目录](adr/README.md)，包含所有架构决策的完整记录（ADR-001 ~ ADR-026）。
 
 > **注**:本章原内联包含全部 ADR 条目及「开源与作品集定位」章节，已拆分至独立文件以保持主文档聚焦核心架构设计。历史决策请查阅 `docs/adr/` 目录。
 
@@ -175,6 +174,7 @@ B 端(门诊就诊)和 C 端(体检预约)的完整业务流程、岗位职责�
 - **P0 基础(0–3 月)**:模块化骨架 + 平台基础(认证/EMPI/主数据/审计);**Spring @Scheduled 调度**;临床域 门诊 EMR MVP;私有化部署;等保基线。
 - **P1 核心域(3–9 月)**:住院 EMR/护理、医技(经 HL7 接 LIS/PACS)、运营(挂号/收费/医保);集成模块成型;RabbitMQ 事件外置化。
   - 药事 ✓、医技(检验) ✓、报告 ✓、**体检预约 C 端 ✓(套餐 / 号源 / 预约 / 排队 / 患者报告)** 已完成。
+  - **跨模块「状态变更 → 生成下游单据」收回服务端 ✓** — 事件驱动 + 最终一致 + 对账兜底,见 [ADR-026](adr/026-downstream-doc-events.md)。
 - **P2 评级与开放(9–18 月)**:FHIR facade(互联互通测评)、电子病历评级数据结构、BI/读模型(CQRS-lite)、**可选 Elasticsearch 病历检索**、可选互联网医院。
   - **CQRS-lite 读模型 ✓** — 优化就诊列表查询性能
   - **FHIR Facade ✓** — Patient/Encounter/Condition/CapabilityStatement 只读 API
@@ -199,5 +199,5 @@ B 端(门诊就诊)和 C 端(体检预约)的完整业务流程、岗位职责�
 
 以下内容已从本文档移除，详见对应独立文件：
 
-- **架构决策记录 (ADR-001 ~ ADR-025)** → [`docs/adr/`](adr/README.md)
+- **架构决策记录 (ADR-001 ~ ADR-026)** → [`docs/adr/`](adr/README.md)
 - **开源与作品集定位** → 已归档至 ADR-010，详见 [`docs/adr/010-hybrid-architecture.md`](adr/010-hybrid-architecture.md)
