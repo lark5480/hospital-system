@@ -5,13 +5,15 @@ spring:
   application:
     name: hospital-notification-service
   rabbitmq:
-    host: ${RABBIT_HOST:localhost}
+    host: ${RABBIT_HOST:127.0.0.1}
     port: ${RABBIT_PORT:5672}
     username: ${RABBIT_USER:admin}
     password: ${RABBIT_PASSWORD:admin123}
 
 # R-35: 通知服务允许的跨域来源(逗号分隔)。
 # 默认只放行本机开发端口;生产必须显式配置为真实前端域名,严禁使用 *。
+# 注意:这里**必须**留 localhost 而非 127.0.0.1 —— 比对的是浏览器发来的 Origin 头,而 Vite 就服务在
+# http://localhost:5173,改成 IP 会让预检直接失败。与其他中间件宿主"用 127.0.0.1"的口径相反,勿顺手统一。
 app:
   cors:
     allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:*}

@@ -4,6 +4,8 @@
 > 只保留「写错代价高、不翻代码发现不了」的铁律与坑;命令 / 测试账号 / 技术选型 / RBAC / 能力概览见根目录 `README.md`,
 > 完整业务流程与权限矩阵见 `docs/business-flow.md`,架构推导与决策记录见 `docs/architecture-design.md`、`docs/adr/`;
 > 代码审查结论与实施状态见 `docs/review/`,面试 / 复盘向问答见 `docs/notes/interview-qa.md`。同一知识点不在本文件重抄,能用指针就用指针。
+> **不要在仓库里留"已完成的历史实施计划"**(原 `docs/compose/plans/` 已删):它们描述改造前的状态,`**/*.md` 检索命中后会误导代理当作待办。
+> 决策被演进时**不改写 ADR 原文**,在文件末尾追加 `## 修订(YYYY-MM)` 段并在 `docs/adr/README.md` 索引里标状态;整条废止的标 **已被取代**。
 > 需要改某个业务流程时,先读对应小节与源码再动手。
 
 ## 项目一句话
@@ -38,12 +40,19 @@ npm test                             # vitest(jsdom + @vue/test-utils)
 | `PDF_FONT_PATH`(即 `app.report.pdf.font-path`) | 留空时按候选路径探测;**容器 / CI 无中文字体时 PDF 中文渲染成方框**(降级不报错,静默劣化) |
 | `app.reconcile.cron` | 下游单据对账频率,默认每 10 分钟。调大可延迟自愈,但不要去掉该任务 |
 
+**中间件宿主默认值是 `127.0.0.1`,不要改回 `localhost`**:R-36 把 compose 端口只绑在 IPv4 回环,而 Windows 上
+`localhost` 优先解析到 IPv6 `::1` → 每次连接先吃一个 `Connection refused`(真机踩过,日志刷成一片)。
+**但两处 CORS(`CORS_ALLOWED_ORIGINS`、网关 `allowed-origin-patterns`)必须留 `http://localhost:*`** ——
+它们比对的是浏览器发来的 Origin 头,而 Vite 就服务在 `localhost:5173`,改成 IP 会让预检直接失败。这两个"localhost"含义相反,别顺手统一。
+
 ## 后端铁律(ArchUnit 强制,违例即构建失败)
 
 - 每个业务域模块 4 层:`api`(REST)→ `application`(服务)→ `domain`(实体/值对象)← `infrastructure`(Mapper)。
   `domain` **只允许被 `api` / `application` / `infrastructure` 访问** —— 通用组件若要碰实体 / 值对象,就放这三层
   (例:审计写入器放 `platform.infrastructure` 而不是 `platform.support`,放错会直接构建失败)。
-- 模块隔离:`clinical` 不得依赖 `pharmacy` / `lab` / `operation` / `integration`;`platform` 为共享内核,所有模块可依赖。
+- 模块隔离:**当前只有 `clinical` 一条单向规则** —— `clinical` 不得依赖 `pharmacy` / `lab`(规则里另列了 `operation` / `integration`,
+  这两个包**尚不存在**,是给未来域的预留护栏,别据此以为仓库里有它们);`platform` 为共享内核,所有模块可依赖。
+  其余模块间依赖(如 `booking → patient`)目前**无规则守护**,新增跨域调用时不会构建失败,得靠自觉。
 - 新业务域复制上述 4 层骨架;通用横切(审计、消息、统一账号、调度)放 `platform`,**业务逻辑不得写进 platform**。
 - 关键写操作用 `@AuditLog` + `AuditLogAspect` 自动落 `audit_log`(Controller 接口想入审计就加注解,勿手写)。
   **不经 Controller 的关键动作**(事件监听器 / `@Scheduled` 任务)切面拦不到,必须显式调 `platform.infrastructure.AuditRecorder`;
@@ -54,6 +63,7 @@ npm test                             # vitest(jsdom + @vue/test-utils)
   `@TransactionalEventListener(AFTER_COMMIT)` + `@Transactional(REQUIRES_NEW)` 监听。
   现成范例:`booking → dispatch`(预约生成检查任务)、`clinical → lab/pharmacy`(确单生成检验申请 / 处方)。
   监听器**必须吞掉异常**:发布方事务已提交,抛出只会让接口返回 500 而主流程其实已成功;失败留给对账任务兜底。
+  完整取舍(为什么选最终一致、对账为何不可省、审计为何要补写)见 `docs/adr/026-downstream-doc-events.md`。
 
 ## 数据库(单 PG16,唯一权威脚本)
 
@@ -100,6 +110,9 @@ npm test                             # vitest(jsdom + @vue/test-utils)
 
 - **就诊状态机**:`CREATED → CONFIRMED → IN_PROGRESS → FINISHED`。`CREATED` 不可结算;已确单后仍可追加医嘱,新医嘱自动并入既有单据。
   所有状态变更必须走 `Visit.transitTo()`,非法转换抛异常(细则见 `VisitStatusTest` / ArchUnit 状态机旁路守护规)。
+- **医嘱与收费是两张表,改医嘱必须同时看收费**:`editOrder`/`cancelOrder` 的前置是「医嘱 `CREATED` **且无 `PAID` 收费行」
+  (`assertOrderNotPaid`)。放过已收费的医嘱 = 钱收了而医嘱被改名/作废,`clinical.charge` 留下对不上出处的孤儿行;
+  撤掉已收费医嘱的唯一正确路径是 `refundOrder`(置 REFUNDED 且不物理删除)。这条闸门此前只在文档里写过、代码从未实现(R-66)。
 - **下游单据不变式**(本仓**唯一刻意最终一致**的链路):「就诊已确单 ⇒ 每条 LAB / MEDICATION 医嘱都被对应单据明细覆盖」。生成由**服务端**完成 ——
   确单时批量发一次事件、已确单后追加医嘱时单条发一次,**前端不再发第二个请求**(历史上正是那一步没有补偿,导致单据静默缺失、连审计都不留痕)。
   `DownstreamDocReconcileJob` 每 10 分钟补漏生成的(补建记录 actor 为 `system`,与人工可区分)。与「就诊/医嘱/收费同事务强一致」的取舍互不冲突。

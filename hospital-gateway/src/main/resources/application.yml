@@ -12,21 +12,23 @@ spring:
       globalcors:
         cors-configurations:
           '[/**]':
+            # 刻意用 localhost:比对的是浏览器 Origin 头(Vite 就服务在 http://localhost:5173),
+            # 与中间件宿主"默认 127.0.0.1"的口径相反,勿顺手改成 IP。
             allowed-origin-patterns: "http://localhost:*"
             allowed-methods: "*"
             allowed-headers: "*"
             allow-credentials: true
       routes:
         - id: hospital-auth
-          uri: http://${CORE_HOST:localhost}:8101
+          uri: http://${CORE_HOST:127.0.0.1}:8101
           predicates:
             - Path=/api/auth/**
         - id: hospital-core
-          uri: http://${CORE_HOST:localhost}:8101
+          uri: http://${CORE_HOST:127.0.0.1}:8101
           predicates:
             - Path=/api/core/**
         - id: hospital-notification
-          uri: http://${NOTIFICATION_HOST:localhost}:8102
+          uri: http://${NOTIFICATION_HOST:127.0.0.1}:8102
           predicates:
             - Path=/api/notify/**
         # R-62: 原先此处有 id=hospital-file 的路由,直接把 /api/files/** 转发到 file-service(8103),
@@ -39,32 +41,32 @@ spring:
         # file-service 只在内网可达;内部令牌也只在 core ↔ file-service 之间存在。
         # 注意:不要为了"方便"再把这条路由加回来 —— 网关层没有身份上下文可用。
         - id: hospital-patient
-          uri: http://${CORE_HOST:localhost}:8101
+          uri: http://${CORE_HOST:127.0.0.1}:8101
           predicates:
             - Path=/api/patient/**
         - id: hospital-pharmacy
-          uri: http://${CORE_HOST:localhost}:8101
+          uri: http://${CORE_HOST:127.0.0.1}:8101
           predicates:
             - Path=/api/pharmacy/**
         - id: hospital-lab
-          uri: http://${CORE_HOST:localhost}:8101
+          uri: http://${CORE_HOST:127.0.0.1}:8101
           predicates:
             - Path=/api/lab/**
         - id: hospital-exam
-          uri: http://${CORE_HOST:localhost}:8101
+          uri: http://${CORE_HOST:127.0.0.1}:8101
           predicates:
             - Path=/api/core/exams/**
         - id: hospital-report
-          uri: http://${CORE_HOST:localhost}:8101
+          uri: http://${CORE_HOST:127.0.0.1}:8101
           predicates:
             - Path=/api/reports/**
         - id: hospital-fhir
-          uri: http://${CORE_HOST:localhost}:8101
+          uri: http://${CORE_HOST:127.0.0.1}:8101
           predicates:
             - Path=/fhir/**
         # Swagger UI & API 文档(转发到 core)
         - id: core-swagger-ui
-          uri: http://${CORE_HOST:localhost}:8101
+          uri: http://${CORE_HOST:127.0.0.1}:8101
           predicates:
             - Path=/swagger-ui.html,/swagger-ui/**,/api-docs/**,/v3/api-docs/**
 

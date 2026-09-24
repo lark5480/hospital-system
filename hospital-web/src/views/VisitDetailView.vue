@@ -217,7 +217,7 @@ async function submitEditOrder() {
     editDialog.value = false
     editingOrder.value = null
   } catch (e: any) {
-    ElMessage.error(e?.message || '修改失败')
+    ElMessage.error(e?.response?.data?.message || e?.message || '修改失败')
   }
 }
 
@@ -232,7 +232,7 @@ async function confirmCancelOrder(order: Order) {
     ElMessage.success('医嘱已取消')
   } catch (e: any) {
     if (e !== 'cancel') {
-      ElMessage.error(e?.message || '取消失败')
+      ElMessage.error(e?.response?.data?.message || e?.message || '取消失败')
     }
   }
 }

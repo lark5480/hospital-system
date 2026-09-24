@@ -11,6 +11,7 @@
 | 端到端业务流程 + 各角色权限矩阵 | [`docs/business-flow.md`](docs/business-flow.md)(流程唯一权威源) |
 | 架构全景推导 | [`docs/architecture-design.md`](docs/architecture-design.md) |
 | 某个决策「为什么这么选」 | [`docs/adr/`](docs/adr/README.md) |
+| 某个 `R-NN` 编号是什么、修没修 | [`docs/review/`](docs/review/2026-09-08-code-review-report.md)(代码审查问题编号与实施状态) |
 | 面试 / 复盘向的知识点问答 | [`docs/notes/interview-qa.md`](docs/notes/interview-qa.md)(非权威规范,辅助理解) |
 
 > 原则:**一个知识点只在一处维护,其余用指针**。命令 / 测试账号 / RBAC 以本 README 为准,铁律与坑以 AGENTS.md 为准,业务流程以 business-flow.md 为准。
@@ -95,11 +96,11 @@ browser ──► hospital-web :5173
 ```
 hospital-web/src
 ├── layouts/MainLayout.vue     # 侧边栏菜单 + 嵌套布局
-├── router/index.ts            # 路由定义(29 条)+ 全局守卫
+├── router/index.ts            # 路由定义 + 全局守卫(路由条数以该文件为准,勿在此统计)
 ├── stores/                    # Pinia 状态管理(auth/visit/menu/patient/dispatch/notification/tabs)
-├── api/                      # Axios 实例 + 按域划分的 API 模块
-├── views/                    # 29 个 Vue 组件(含 Login/NotFound)
-└── types/                    # TypeScript 类型定义
+├── api/                       # Axios 实例 + 按域划分的 API 模块
+├── views/                     # 视图组件(清单以 src/views/ 为准)
+└── types/                     # TypeScript 类型定义
 ```
 
 ## 快速开始
@@ -135,6 +136,10 @@ npm install && npm run dev              # :5173
 
 > 用医生手机号登录后点击"收费"按钮会被 403,这是七权分立的正确体现。
 > `13800000000` 同时挂 ADMIN 与 PATIENT 两角色,菜单 = 两角色权限并集,正好演示「同一手机号多角色」。
+> **上表「密码」列是种子初始值,不是长期可用的凭证**:R-10 会在密码仍等于默认口令时置 `mustChangePassword=true` 并强制改密,
+> 所以任何账号改过密后,照这张表登录就会 401(表本身不会跟着变,以实际口令为准)。
+> `docker compose down -v` 重置 `pg-data` 后口令会回到 `123456`,但首次登录仍会被要求改密。
+> 别靠试口令定位问题 —— R-12 是**连续失败 5 次锁 15 分钟**,猜口令会把账号锁成一个新的"故障现场"。
 
 ### API 文档
 
@@ -163,9 +168,13 @@ npm install && npm run dev              # :5173
 ## 模块规则(ArchUnit 红线)
 
 CI 中 `mvn verify` 触发 `ArchitectureTest`:
-- 分层:`api` ↛ `application` ↛ `domain` ↚ `infrastructure`
-- 模块隔离:`clinical` 不依赖 `pharmacy` / `lab` / `operation` / `integration`
+- 分层:`api` ↛ `application` ↛ `domain` ↚ `infrastructure`(`domain` 只允许被 api / application / infrastructure 访问)
+- 模块隔离:`clinical` 不得依赖 `pharmacy` / `lab`(规则里同时预留了 `operation` / `integration` 两个**尚未创建**的包名,
+  属前瞻性护栏而非现有模块 —— 别据此以为仓库里有这两个模块)
 - `platform` 为共享内核,所有模块可依赖
+- 状态机旁路守护:`*Service`(除 `VisitService`)不得直接 `Visit.setStatus`(R-48)
+
+> 目前只有 `clinical` 一条单向隔离规则;其余模块间依赖(如 `booking → patient`)守护待补,详见 [ADR-003](docs/adr/003-archunit.md)。
 
 ## 目录
 
@@ -199,8 +208,8 @@ hospital-system/
 前端"就诊详情"页可:
 - **追加医嘱**:选药品 / 检查 / 检验 → 数量 / 单价 → 提交。后端 `addOrder` 在同一 DB 事务内写入 `clinical.orders` 并生成 `clinical.charge`(UNPAID)。
 - **收费**:点击"收费"按钮,后端 `pay` 在同一事务内把所有 UNPAID 收费置为 PAID。
-- **修改/取消医嘱**:未执行(CREATED)的医嘱可修改(名称/数量/单价)或取消,已执行或已收费的不动。
-- **退费**:已收费的 charge 可退费(REFUNDED)。
+- **修改/取消医嘱**:需该医嘱为 CREATED(未执行)**且无已收费行**;已收费的必须先退费(否则 409 并提示走退费)。与就诊处于哪个状态无关。
+- **退费**:`refundOrder` 把医嘱置 CANCELLED、其已收费行置 REFUNDED(**不物理删除**,保留审计轨迹);未收费行直接删除。
 - 金额由后端 `unitPrice * quantity` 汇总,前端只作展示。
 
 > 关键:就诊 / 医嘱 / 收费 *同一事务* 强一致落库(模块化单体的优势,无需 Saga / 最终一致性),这是本作品在「单体 vs 微服务」权衡中的核心判断点。
@@ -212,13 +221,14 @@ hospital-system/
 - **分诊屏**:`OutpatientScreenView` 展示当前科室排队状态。
 
 #### 药事(处方→发药)
-- **创建处方**:从就诊的药品医嘱(type=MEDICATION)自动聚合,生成处方 + 明细行。
+- **创建处方**:就诊**确单后由服务端自动生成**(从该就诊药品医嘱 type=MEDICATION 聚合处方 + 明细行),医生无需手点、前端不发第二次请求。
+- **回诊追加**:已确单后追加的药品医嘱会自动并入既有处方(同一事件链,见 [`docs/adr/026`](docs/adr/026-downstream-doc-events.md))。
 - **发药**:标记处方为 DISPENSED,同步把关联医嘱状态回写为 EXECUTED。
 - **取消**:取消处方与冲销。
 - 药事模块应用完整 DDD 四层。
 
 #### 检验(申请→结果)
-- **申请**:从就诊的检验(type=LAB)医嘱自动聚合,生成 requisition + 明细。
+- **申请**:就诊确单后由服务端自动生成(聚合检验 type=LAB 医嘱),同样不经前端编排;失败由对账任务补建。
 - **录入结果**:在 `LabRequisitionDetailView` 录入每项结果(value/unit/reference)。
 - **取消**:取消申请并冲销。
 - **科室路由**:检验/检查医嘱带执行科室(`executionDeptId`),检验申请按执行科室过滤到对应科室人员处理。
@@ -240,20 +250,16 @@ hospital-system/
 - **关键类**:`MedicalRecord`, `MedicalRecordService`, `JsonbTypeHandler`。
 - **API 端点**:`POST /api/core/medical-records`, `GET /api/core/medical-records?visitId=X`, `GET /api/core/medical-records/patient/{patientId}`。
 
-#### 审计日志(AOP 切面)
-关键写操作自动落 `audit_log` 表（按模块分组）：
-- **就诊域**：`CREATE_VISIT` / `CONFIRM_VISIT` / `FINISH_VISIT` / `DELETE_VISIT` / `EDIT_ORDER` / `CANCEL_ORDER` / `REFUND_ORDER` / `EXECUTE_EXAM_ORDER` / `SAVE_MEDICAL_RECORD`
-- **药事域**：`CREATE_PRESCRIPTION` / `DISPENSE` / `CANCEL_PRESCRIPTION`
-- **检验域**：`CREATE_REQUISITION` / `SUBMIT_RESULTS` / `CANCEL_REQUISITION`
-- **预约域**：`BOOK_APPOINTMENT`
-- **报告域**：`CREATE_REPORT` / `PUBLISH_REPORT`
-- **挂号域**：`REGISTER` / `CALL_NEXT` / `CANCEL_REGISTRATION`
-- **检查执行域**：`DISPATCH_START` / `DISPATCH_COMPLETE` / `DISPATCH_CALL_NEXT` / `DISPATCH_SKIP` / `DISPATCH_REQUEUE` / `DISPATCH_REORDER`
-- **组织域**：`CREATE_DEPT` / `UPDATE_DEPT` / `DELETE_DEPT` / `CREATE_STAFF` / `UPDATE_STAFF` / `DELETE_STAFF`
-- **菜单域**：`CREATE_MENU` / `UPDATE_MENU` / `DELETE_MENU` / `SORT_MENU`
-- **权限域**：`SAVE_ROLE_AUTHORITIES`
-- **账号域**：`CHANGE_PASSWORD`
-- `@AuditLog` 注解 + `AuditLogAspect` 切面自动记录。
+#### 审计日志(AOP 切面 + 事件侧显式补写)
+关键写操作自动落 `platform.audit_log`。覆盖的域:
+**就诊**(建单/确单/完成/删除/医嘱改-取消-退费/检查执行/病历) · **药事**(建单/发药/取消) · **检验**(建单/录结果/取消) ·
+**收费与退费** · **预约**(下单/取消) · **报告**(创建/发布) · **挂号**(挂号/叫号/取消) · **检查调度**(开始/完成/叫号/跳过/重排/回队) ·
+**组织**(科室与员工的增删改) · **菜单**(增删改/排序) · **权限**(角色授权保存) · **账号**(改密) · **文件**(上传)。
+
+> **动作码全集不在这里手抄** —— 它随功能增删而变,曾经抄过的版本落后了 4 个动作。要精确清单就地查:
+> `grep -rho '@AuditLog(action = "[A-Z_]*"' hospital-core/src/main/java | sort -u`
+> 两条写入路径:`@AuditLog` + `AuditLogAspect` 拦 Controller;**不经 Controller 的**(事件监听器 / `@Scheduled` 对账任务)
+> 由 `platform.infrastructure.AuditRecorder` 显式补写。语义与坑见 [`AGENTS.md`](AGENTS.md)「后端铁律」。
 
 #### CQRS-lite 读模型
 - **问题**:原 `listPage()` 加载全表到内存,存在 N+1 查询和 O(N²) 复杂度。

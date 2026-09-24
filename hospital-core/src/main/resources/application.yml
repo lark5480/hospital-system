@@ -14,7 +14,10 @@ spring:
   mvc:
     throw-exception-if-no-handler-found: true
   datasource:
-    url: jdbc:postgresql://${PG_HOST:localhost}:${PG_PORT:5432}/${PG_DB:hospital}
+    # 中间件宿主一律默认 127.0.0.1,不用 localhost:
+    # docker-compose 因 R-36 把端口只绑在 IPv4 回环上,而本机 localhost 优先解析到 IPv6 ::1,
+    # 用 localhost 会让每次连接先吃一个 Connection refused(其余服务配置同此口径,理由只写这一处)。
+    url: jdbc:postgresql://${PG_HOST:127.0.0.1}:${PG_PORT:5432}/${PG_DB:hospital}
     username: ${PG_USER:postgres}
     password: ${PG_PASSWORD:root123}
     driver-class-name: org.postgresql.Driver
@@ -32,7 +35,7 @@ spring:
       validation-timeout: 3000
       leak-detection-threshold: 10000
   rabbitmq:
-    host: ${RABBIT_HOST:localhost}
+    host: ${RABBIT_HOST:127.0.0.1}
     port: ${RABBIT_PORT:5672}
     username: ${RABBIT_USER:admin}
     password: ${RABBIT_PASSWORD:admin123}
@@ -42,7 +45,7 @@ spring:
       schema-locations: classpath:db/schema.sql
   data:
     redis:
-      host: ${REDIS_HOST:localhost}
+      host: ${REDIS_HOST:127.0.0.1}
       port: ${REDIS_PORT:6379}
 
 mybatis-plus:
@@ -95,7 +98,7 @@ app:
 # 内部文件服务(core → file-service → MinIO)地址;默认 8103 与运行实例一致
 file:
   service:
-    base-url: http://localhost:8103
+    base-url: http://127.0.0.1:8103
   # R-03: 调用 file-service 的内部令牌,生产必须与 file-service 配置同一把
   internal-token: ${FILE_INTERNAL_TOKEN:}
 
