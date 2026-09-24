@@ -145,7 +145,11 @@ public class VisitService {
                 .build();
     }
 
-    /** 确单:草稿 → 已确单,锁定就诊单不再可修改/追加。幂等(已是 CONFIRMED 则直接返回)。 */
+    /**
+     * 确单:草稿 → 已确单,并把当时全部 CREATED 医嘱交给下游生成单据(R-64)。幂等(已是 CONFIRMED 则直接返回)。
+     * <p>注意"确单"并<b>不</b>冻结医嘱:追加/修改/取消的闸门是终态 {@code FINISHED} 与医嘱自身状态,
+     * 已确单后追加的 LAB/MEDICATION 医嘱走本方法的第二个触发点(见 {@link #addOrder})。
+     */
     @Transactional
     public VisitDetail confirm(Long visitId) {
         Visit visit = visitMapper.selectById(visitId);
@@ -284,6 +288,7 @@ public class VisitService {
         if (!"CREATED".equals(existing.getStatus())) {
             throw new IllegalStateException("只能修改未执行的医嘱(当前状态: " + existing.getStatus() + ")");
         }
+        assertOrderNotPaid(visitId, orderId, "修改");
         // R-06: 统一金额计算(校验 + 两位小数),避免 NPE / 负额结算 / scale 漂移
         BigDecimal newAmount = calcAmount(updates.getUnitPrice(), updates.getQuantity());
         existing.setType(updates.getType());
@@ -326,6 +331,7 @@ public class VisitService {
         if (!"CREATED".equals(existing.getStatus())) {
             throw new IllegalStateException("只能取消未执行的医嘱(当前状态: " + existing.getStatus() + ")");
         }
+        assertOrderNotPaid(visitId, orderId, "取消");
         existing.setStatus("CANCELLED");
         orderMapper.updateById(existing);
 
@@ -338,6 +344,24 @@ public class VisitService {
 
         // R-16: 复用本次刷新已算好的读模型,避免 refresh 后再 getDetail() 重查一遍
         return buildDetailReusingReadModel(visitId);
+    }
+
+    /**
+     * 已收费的医嘱不得直接修改 / 取消 —— 必须先走 {@link #refundOrder}(它会把 charge 置 REFUNDED 并作废医嘱)。
+     *
+     * <p>为什么必须拦:这两条路径都只按医嘱自身状态判断,而收费行是<b>另一张表</b>。
+     * 放过的后果是账实不一致 —— {@code cancelOrder} 只删 {@code UNPAID} 行,已 {@code PAID} 的行会作为孤儿留下
+     * (钱收了、对应的医嘱却没了或被改了名目),对账与退费都查不到出处。
+     * 早先文档写过"已收费不可改",但实现里从未有这道闸门,属文档先行、代码未跟上。
+     */
+    private void assertOrderNotPaid(Long visitId, Long orderId, String action) {
+        Long paid = chargeMapper.selectCount(new LambdaQueryWrapper<Charge>()
+                .eq(Charge::getVisitId, visitId)
+                .eq(Charge::getOrderId, orderId)
+                .eq(Charge::getPayStatus, "PAID"));
+        if (paid != null && paid > 0) {
+            throw new IllegalStateException("该医嘱已收费,不可" + action + ";请先退费");
+        }
     }
 
     /**
