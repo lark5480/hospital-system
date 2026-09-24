@@ -15,7 +15,7 @@
 #   docker compose down                    # 停止并删除容器/网络（保留数据卷）
 #
 # 【重置数据库】停止并清空数据卷 → 重新拉起：
-#   docker compose down -v                 # 删除容器 + pg-data / minio-data 数据卷
+#   docker compose down -v                 # 删除容器 + pg-data / minio-data / mq-data 数据卷
 #   docker compose up -d                   # 全新 pg-data 会重跑 schema.sql 播种
 #   注意：-v 会一并清空 MinIO 已上传文件；仅本项目卷，不影响其他容器。
 #
@@ -32,6 +32,25 @@
 #   mvn -pl hospital-file-service spring-boot:run         # :8103
 #   mvn -pl hospital-gateway spring-boot:run              # :8104
 #   cd hospital-web && npm run dev                        # :5173（Vite 代理到网关）
+# =============================================================
+#
+# ============ 故障签名：容器起不来时先对号入座 ============
+#
+# [rabbitmq] `docker compose ps` 显示 Exited (1)，日志里是
+#   Error when reading /var/lib/rabbitmq/.erlang.cookie: eacces
+#   → Kernel pid terminated (application_controller) ... rabbitmq_prelaunch
+# 根因：Erlang 节点由 docker-entrypoint.sh 以 gosu 降权成 rabbitmq 后启动，
+#   而卷里的 .erlang.cookie 属主是 root 且权限 400（曾被以 root 身份启动过一次，例如 --user root 调试）
+#   → 非属主读 400 文件 = eacces。与口令、端口、镜像版本都无关。
+# 确认：docker run --rm -v hospital-system_mq-data:/v --entrypoint sh rabbitmq:3-management -c 'ls -l /v/.erlang.cookie'
+#   看到 `-r-------- root root` 即是本故障。
+# 修法二选一（都不丢业务数据 —— 该卷除 cookie 外只有队列元数据）：
+#   A. 只改属主（不重建容器）：
+#      docker run --rm -v hospital-system_mq-data:/v --entrypoint sh rabbitmq:3-management \
+#        -c 'chown rabbitmq:rabbitmq /v/.erlang.cookie && chmod 400 /v/.erlang.cookie'
+#      docker compose up -d rabbitmq
+#   B. 清卷重来（cookie 会按正确属主重新生成）：
+#      docker compose rm -sf rabbitmq && docker volume rm hospital-system_mq-data && docker compose up -d rabbitmq
 # =============================================================
 #
 # 【R-36 安全说明】以下口令都是**本地开发演示默认值**,通过环境变量可覆盖:
@@ -106,6 +125,11 @@ services:
       # R-36: 绑定回环 —— RabbitMQ 管理端(15672)可读到含患者姓名的消息体
       - "127.0.0.1:5672:5672"
       - "127.0.0.1:15672:15672"
+    volumes:
+      # 镜像在 /var/lib/rabbitmq 声明了 VOLUME。不写这一行时 Docker 会挂一个**匿名卷**,
+      # 出问题时(见文件末尾「故障签名」)既枚举不到也删不掉,只能整库重置。显式命名后可定点处置:
+      #   docker volume rm <project>_mq-data
+      - mq-data:/var/lib/rabbitmq
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "ping"]
       interval: 10s
@@ -115,3 +139,4 @@ services:
 volumes:
   pg-data:
   minio-data:
+  mq-data:

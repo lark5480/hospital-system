@@ -6,6 +6,7 @@
 - **流程**：第 1 轮三方独立审查 → 第 2 轮交叉质询（反驳 / 降级 / 升级 / 补充 / 自我修正 / 预判辩护）→ 第 3 轮主席收敛
 - **产出**：61 条问题（6 Critical / 22 High / 26 Medium / 7 Low），含 8 条质询后新增、9 条质询后改级
 - **实施状态（2026-09-11 更新）**：P0 + P1 + P2 已全部落盘；复核 / 实测中发现的 4 条审核漏项（R-62 Critical / R-63 High / R-64 High / R-65 Medium）已修复；原先 5 条「部分修复」（R-11 / R-21 / R-33 / R-34 / R-47）亦已收尾 —— 合计 65 条：**64 项已修复、1 项已缓解、0 项部分修复**。
+  > **本行的口径已被 2026-09-24 复核修正**：逐条对代码后发现 R-26 / R-28 应记为**部分修复**，且新增第 5 条漏项 R-66（合计 66 条：62 已修复 / 1 已缓解 / 2 部分修复 / 1 新增已修）。修正说明与依据见「部分修复」节与「Done 表补记」节，原始结论与定级均未改写。
 - **验证覆盖**：后端 336 用例（core 285 / notification 25 / file-service 20 / gateway 6）+ 前端 19 用例全绿，前端 `type-check` 与构建通过；**两条浏览器端到端链路已于 2026-09-11 在本地真实环境执行**：① 体检预约 → 分诊排队 → 自助取消 → 看板联动；② 新建就诊 → 加检验医嘱 → 确单自动生成检验申请 → 追加医嘱自动并入同一申请（含检验科账号可见性验证、草稿态不发事件的反向守护、以及**对账任务在真实 10 分钟边界自行触发并补建 + 留痕**）。唯一未做压测验证的是 R-29（靠根因治理间接缓解，见「遗留」）。详见下方「实施状态总览」
 - **定级标准**：
   - **Critical**：可直接导致批量敏感数据泄露 / 权限完全失守，或线上必然不可用
@@ -76,9 +77,40 @@
 | 决策 4B | **由网关注入 `X-Internal-Token`**（`AddRequestHeader`）——令牌只存在于服务端，浏览器永不接触，前端零改动；file-service 在 prod 未配置令牌即拒绝启动（与 R-01 对称）。<br>**已被 R-62 取代**：网关默认 profile 即 `permitAll`，它代发的令牌对匿名调用者同样生效，不构成边界；现改为撤除该路由、文件访问一律经 core 的 `/api/core/files` 代理 | gateway `application.yml`、`InternalTokenFilter`、file-service `SecurityConfig` |
 | 决策 5 | **改密/重置即吊销该用户全部 token**（新增 `TokenRevocationService`，Redis 用户维度，TTL 与 token 对齐）；JWT TTL 8h→4h；`issue()` 加 jti 为单设备登出预留 | `TokenRevocationService`(新)、`JwtAuthFilter`、`JwtTokenService`、`PasswordController`、`ChangePasswordView.vue` |
 
+### Done 表补记（2026-09-24 逐条核对代码后补）
+
+> **为什么补**：上面那张 Done 表缺了 11 条编号 —— 它们在三/四/五节各自被打了 ✅，却在总览表里没有对应行，
+> 导致"报告说修了、但按图索骥找不到修法"。本次只**补记事实**，不改动任何原始定级与结论。
+>
+> **统计口径**（此前未写明，是数字对不上的根源）：三/四/五节顶部的"已修复（N 项）"是**按发现维度归类的编号清单**，
+> 交叉质询中有若干条目改过级（如 R-15 Critical→High、R-58 Medium→Low、TEST-10→R-50 新立），
+> 段落里的清单也跟着迁移，因此**段落数字之和 ≠ 65，也 ≠ 总览表行数**。
+> 实施状态的唯一清单是本节上方的总览表；段落只表示"该维度当初发现了哪些"。
+
+| 编号 | 修复内容 | 主要文件 | 核对证据 |
+|---|---|---|---|
+| R-04 | 业务基表外键 / 过滤列补二级索引 | `db/schema.sql` | 现有 `CREATE INDEX` 共 **59** 条（多于建议的 25 条：R-20 另加 5 个 `pg_trgm` GIN、R-37 加 `idx_board_status_seq` 等） |
+| R-05 | 写事务内 `selectList(null)` 全表物化改为条件下推 | `VisitService`、`ChargeService` | `pay()` 单条批量 UPDATE、`finishVisit()` 的 `hasUnpaid` 改 `selectCount`、`refundOrder`/`editOrder` 的 charge 查询全部 `eq(visitId, orderId, payStatus)` |
+| R-06 | 金额统一计算 + 边界校验 + 精度断言 | `VisitService.calcAmount`、`VisitServiceOrderAmountTest` | 8 个用例（null 单价 / 负数量 / 零数量 / scale 固定两位 / 汇总跳过 null） |
+| R-17 | `listPage` 逐行回查（`pageSize=10` → 32 次 SQL）改批量 | `VisitService.listPage` → `toDetails` | 现为"3 次批量查询 + `groupingBy` 组装"，SQL 数与页面条数无关；并过滤 `visit` 已不存在的脏数据 |
+| R-18 | `VisitService.list()` 的 O(V×(O+C)) 内层全表循环 | `VisitService.list` | orders / charges 各查一次并分组，降为 O(V+O+C)。<br>**残留（须知）**：外层仍是 `visitMapper.selectList(null)` 全量加载 `visit`，方法注释自称"分页前兼容,未分页"，`GET /api/core/visits` 仍可达 —— R-08 已把它限制为 `system:admin` 或带科室上下文，**越权面已关，数据量放大面未消除** |
+| R-23 | HikariCP 显式配置（原默认 10 连接） | core `application.yml` | `maximum-pool-size: 30` / `minimum-idle: 10` / `connection-timeout: 10000` |
+| R-24 | `com.hospital` 日志 DEBUG → INFO | core `application.yml` | `com.hospital: info`，并留注释"排障时临时 `--logging.level.com.hospital=debug`" |
+| R-26 | **部分修复**：JaCoCo 已接入，**Testcontainers 未引入** | `hospital-core/pom.xml` | JaCoCo `prepare-agent` + `report`(test 阶段) + `check`(verify，LINE ≥ 0.40 / BRANCH ≥ 0.30，`haltOnFailure=false`，Q+2 才转门禁)。<br>**2026-09-24 实测**：LINE **57.2%** (2151/3759) · BRANCH **41.5%** (752/1810) —— 两项都已越过原定的 Q+1 收紧目标(0.50 / 0.40)，把 `haltOnFailure` 提为 `true` 的前提已基本具备。<br>但全仓 `testcontainers` **零命中** —— 集成用例直连 `127.0.0.1` 的 PG（由 docker-compose 提供），"换机器/CI 无 PG 即跑不了"这一半未解决 |
+| R-27 | 三个零测试模块补测 | 三模块 `src/test` | notification 4 / file 3 / gateway 2 个测试类（原为 0） |
+| R-28 | **部分修复**：Controller 契约测试 | `FhirApiTest`、`AuthenticationFlowEndToEndTest`、`SecurityConfigAsyncDispatchTest` | 全仓仅 **3** 个测试类用 MockMvc，而 core 有 **26** 个 `@RestController` —— 原"19/23 零契约测试"的缺口已收窄但未消除；FHIR 出参字段断言已扩，鉴权链路已覆盖 |
+| R-55 | CI 增加前端门禁 | `.github/workflows/ci.yml` | node 作业跑 `npm ci` / `type-check` / `test`，并上传 jacoco 报告产物 |
+
+**顺带发现（不属本报告 65 条）**：`VisitService.listAll()` 已**零调用方** —— R-02 撤掉 FHIR 无参全量端点后
+只剩下这个仍会 `selectList(null)` 拉全表的公开方法。留着属死代码，删除前建议确认无反射 / 脚本调用。
+
 ### 部分修复
 
 > **已清空（2026-09-10）**：原先的 5 条（R-11 / R-21 / R-33 / R-34 / R-47）已全部收尾，实现要点见「实施状态总览」新增条目。
+>
+> **2026-09-24 复核后重新开两条**（当时按"整条已修"计入 64 项，核对代码后应为部分）：
+> **R-26**（JaCoCo 已接入 / Testcontainers 未引入）、**R-28**（鉴权链路与 FHIR 契约已覆盖 / 其余 Controller 仍零 MockMvc）。
+> 合计口径相应修正为：**62 项已修复、1 项已缓解、2 项部分修复**（仍为 65 条，未新增问题项）。
 
 ### 附带修复（原报告未列项）
 
@@ -88,7 +120,7 @@
 | `StaffView.vue` 既有编译错误 | `patientApi.resetPassword` → `resetPatientPassword`；`Staff` 类型补 `userId` |
 | 403 无统一提示 | `http.ts` 补 403 中文提示；401 时不再重复跳转登录页 |
 
-### 复核中发现的审核漏项（R-62 / R-63 / R-64 / R-65 —— 均已修复）
+### 复核中发现的审核漏项（R-62 / R-63 / R-64 / R-65 / R-66 —— 均已修复）
 
 > 这几条不在原 61 条内，是在回答「待拍板 5 件事」时复核代码、以及本地真实环境联调时发现的。R-62 是 Critical 且**匿名可利用**，已按原「决策 4 方案 A」落地（该方案的定性同时从"治本优化"上调为"唯一有效修法"）；R-65 则是做 SSE 端到端实测时，从服务端日志里抓到的运行时错误。
 
@@ -147,6 +179,20 @@
     |---|---|---|
     | 超时点服务端日志 | `ERROR ... threw exception [Unable to handle the Spring Security Exception because the response is already committed]` + `AccessDeniedException` + `Exception Processing [ErrorPage[... location=/error]]` | 无 ERROR/WARN（仅 `WebAsyncManager: Performing async dispatch` 的 DEBUG） |
     | 客户端 `curl -N` | `curl: (18) transfer closed with outstanding read data remaining`（流被异常打断） | 心跳正常输出、到点干净结束，curl 无报错 |
+
+- **R-66【High】`editOrder` / `cancelOrder` 不看收费状态：已收费的医嘱能被改掉或作废，留下孤儿 `PAID` 收费行**（2026-09-24 文档核对时发现，已修复）。
+  - **发现方式**：不是压测也不是联调，而是做文档体系核查时把 `docs/business-flow.md` 的「已执行或已收费的不动」与代码逐句对齐 ——
+    **这句话从未实现过**。它属"文档写了意图、代码没跟上"，且此前 `editOrder` / `cancelOrder` 零用例，所以没有任何一道关口拦得住。
+  - **证据链（修复前）**：两条路径的前置都只有 `if (!"CREATED".equals(existing.getStatus()))`，而收费在**另一张表** `clinical.charge`；
+    `cancelOrder` 删的是 `payStatus = 'UNPAID'` 的行 —— 已 `PAID` 的行不会被连带处理。
+  - **后果**：钱已收、医嘱却被改名或作废，`charge` 与 `orders` 对不上出处；更糟的是 `refundOrder`（唯一正确的撤销路径）失去约束力 ——
+    绕过退费直接改口即可。
+  - **修复**：抽出 `VisitService.assertOrderNotPaid(visitId, orderId, action)`，两条路径共用；存在 `PAID` 行即抛
+    `IllegalStateException` → HTTP 409 + 「该医嘱已收费,不可修改/取消;请先退费」。退费路径**不经过**该闸门（已收费正是它的输入）。
+  - **前端连带修**：`VisitDetailView.vue` 的「修改 / 取消」两处 catch 原先只读 `e?.message`，会把后端中文提示丢成
+    `Request failed with status code 409`；已统一为 `e?.response?.data?.message || e?.message`（与同文件其余 6 处一致）。
+  - **验证**：`VisitServicePaidOrderGateTest` 5 例（两条拒绝 + 两条"无 PAID 行必须放行"反向面 + 退费路径不受影响），
+    并做**差分验证**：临时摘掉 `assertOrderNotPaid` 调用后，两条拒绝用例确实失败 —— 证明用例不是假绿。
 
 - **R-39 暴露的类型债**：开启按需引入后若生成 `components.d.ts`，`vue-tsc` 会立刻暴露 **34 个既有类型问题**（`el-table` 作用域插槽的 row 被推断为 `DefaultRow`、`el-tag :type` 传入了含空串的联合类型）。本轮为守住"type-check 0 错误"基线关闭了 dts 生成；修完这 34 处即可打开，换取组件级类型安全
 - **R-56 的行为变化**：改 sessionStorage 后**新开标签页不再共享登录态**（单标签刷新仍免登）。这是收窄 XSS 窗口的代价，两全需 httpOnly Cookie + CSRF（P3）
