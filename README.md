@@ -12,6 +12,7 @@
 | 架构全景推导 | [`docs/architecture-design.md`](docs/architecture-design.md) |
 | 某个决策「为什么这么选」 | [`docs/adr/`](docs/adr/README.md) |
 | 某个 `R-NN` 编号是什么、修没修 | [`docs/review/`](docs/review/2026-09-08-code-review-report.md)(代码审查问题编号与实施状态) |
+| 号源并发防超卖的实测结论 | [`docs/review/2026-10-06-concurrency-verification.md`](docs/review/2026-10-06-concurrency-verification.md)(含 R-25 竞态窗口的复现,脚本见 `scripts/`) |
 | 面试 / 复盘向的知识点问答 | [`docs/notes/interview-qa.md`](docs/notes/interview-qa.md)(非权威规范,辅助理解) |
 
 > 原则:**一个知识点只在一处维护,其余用指针**。命令 / 测试账号 / RBAC 以本 README 为准,铁律与坑以 AGENTS.md 为准,业务流程以 business-flow.md 为准。

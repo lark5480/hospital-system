@@ -31,6 +31,9 @@ npm run type-check                   # vue-tsc
 npm test                             # vitest(jsdom + @vue/test-utils)
 ```
 
+> **号源并发防超卖验证**(Windows / PowerShell;需先起中间件与 core,并设置与启动时相同的 `APP_JWT_SECRET`):
+> 用法示例见 `scripts/slot-race-test.ps1` 头部注释,结论与解释边界见 `docs/review/2026-10-06-concurrency-verification.md`。
+
 ## 关键配置(不设也能本地跑,生产必看)
 
 | 配置 | 不设的后果 |
